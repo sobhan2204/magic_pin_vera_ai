@@ -10,6 +10,7 @@ from typing import Optional
 from .compose import ComposeEnv, Composed, compose_message, draft_cache_key
 from .llm.router import Router, estimate_tokens
 from .prompts import MAX_TOKENS
+from .writer import write_batch
 from .config import Settings
 from .decision import decide
 from .dedup import action_fingerprint, alternate_hook_keys, hook_identity, promote_hook
@@ -104,7 +105,25 @@ async def run_tick(store: Store, settings: Settings, body: dict) -> list[dict]:
     except Exception:
         hits = {}
     leases = {}
-    if router.enabled and time.monotonic() < deadline_at - 2:
+    batch_out: dict[str, dict] = {}
+    todo = [d for d in decisions if not hits.get(d.trigger_id)]
+    if router.enabled and settings.llm_batch_size > 1 and todo and time.monotonic() < deadline_at - 2:
+        # Economy mode: several decisions share one prompt/call. Groups are formed in score order.
+        size = settings.llm_batch_size
+        groups = [todo[i:i + size] for i in range(0, len(todo), size)]
+
+        async def run_group(group: list[Decision]) -> None:
+            items = []
+            for d in group:
+                t, fs = by_id[d.trigger_id]
+                items.append((t, fs, get_playbook(t.kind), await _recent_bodies(store, d.merchant_id)))
+            est = estimate_tokens([{"content": "x" * (1500 + 2200 * len(items))}], MAX_TOKENS * len(items))
+            lease = await router.acquire(est)
+            if lease is not None:
+                batch_out.update(await write_batch(router, items, deadline_at, lease))
+
+        await asyncio.gather(*(run_group(g) for g in groups))
+    elif router.enabled and time.monotonic() < deadline_at - 2:
         for d in decisions:
             if hits.get(d.trigger_id):
                 continue
@@ -137,7 +156,9 @@ async def run_tick(store: Store, settings: Settings, body: dict) -> list[dict]:
             env = ComposeEnv(store=store, settings=settings, router=router, deadline_at=deadline_at,
                              lease=leases.get(d.trigger_id) if first else None,
                              cache_key=keys[d.trigger_id] if first else draft_cache_key(t, vers, tick_date, f"alt{n}"),
-                             allow_llm=first, cached=hits.get(d.trigger_id) if first else None, prefetched=first)
+                             allow_llm=first and settings.llm_batch_size <= 1,
+                             llm_out=batch_out.get(d.trigger_id) if first else None,
+                             cached=hits.get(d.trigger_id) if first else None, prefetched=first)
             c = await compose_message(env, t, opt, recent)
             fp = action_fingerprint(d.merchant_id, d.customer_id, src, atoms, c.cta)
             if fp in sent_fps:

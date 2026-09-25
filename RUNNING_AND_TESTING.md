@@ -66,11 +66,11 @@ Stop a background server on Windows: `Get-CimInstance Win32_Process | ? { $_.Com
 ## 4. The test suite
 
 ```powershell
-pytest -q                 # ~260 tests, mock LLM, in-memory store, ~15 s, zero API calls
+pytest -q                 # ~265 tests, mock LLM, in-memory store, ~15 s, zero API calls
 pytest -m live -s         # opt-in: a handful of REAL Groq calls (needs GROQ_API_KEY, ~10k tokens)
 $env:UPSTASH_REDIS_REST_URL="..."; $env:UPSTASH_REDIS_REST_TOKEN="..."; pytest tests/test_store.py -q   # also runs the Lua scripts on a real DB (prefix vera_test:)
 ```
-Expected: `256+ passed, 5 skipped` (the 5 skips are the Redis-only store tests when no Upstash URL is set).
+Expected: `263 passed, 5 skipped` (the 5 skips are the Redis-only store tests when no Upstash URL is set).
 
 | File | Covers |
 |---|---|
@@ -85,6 +85,7 @@ Expected: `256+ passed, 5 skipped` (the 5 skips are the Redis-only store tests w
 | `test_reply_flows.py`, `test_reply_engine.py` | replay scenarios, action-mode lint, merchant-level state, customer flows, turn cap, language switch |
 | `test_llm_router.py` | quota reservation, failover, cooling, structured-output request shape, deadlines, broken key |
 | `test_prompts_and_llm_flows.py` | prompt size/shape, originality of few-shots, draft-cache determinism, LLM reply path |
+| `test_batch.py` | optional batch composition: one call for several decisions, per-item verification and fallback |
 | `test_tick.py`, `test_api_contract.py`, `test_determinism.py` | end-to-end HTTP contract, adaptive injection, restraint, teardown, determinism |
 
 ## 5. Key test cases and the rule each protects
@@ -277,6 +278,12 @@ therefore uses the LLM for the highest-scoring ~8-10 decisions and the determini
 grounded). A full judge run (~100 first messages + ~20 % repairs + ~100 replies of which only questions use the LLM) needs roughly
 **150-200k tokens**, i.e. about one day's budget for both models together. Do not repeat `full_run.py` against the live LLM, or run
 `full_evaluation`, more than once per day. For iteration use `LLM_MODE=mock`.
+
+**Batch mode (optional, off by default).** `LLM_BATCH_SIZE=2..4` composes that many decisions in one LLM call: one shared system
+prompt and one style example instead of one per message, so the prompt is ~40-50 % smaller per message (asserted in
+`tests/test_batch.py`) and each batch costs one request instead of N. Trade-off: no per-item repair (an item that fails
+verification simply gets the deterministic template) and slightly less individual attention per message. Turn it on only when the
+per-minute token limit is what is holding back LLM-written messages: set `LLM_BATCH_SIZE=3` in Vercel and redeploy.
 
 Check remaining quota: Groq console -> Limits/Usage, or `GET /v1/_debug?token=$DEBUG_TOKEN` (`rate_limits.models.<id>.minute/day`).
 

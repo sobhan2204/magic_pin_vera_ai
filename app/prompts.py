@@ -87,7 +87,8 @@ def ask_example(fs: FactSheet, pb: Playbook) -> str:
     return slot or (pb.ask_hi if fs.language == "hi-en" else pb.ask_en)
 
 
-def build_writer_messages(fs: FactSheet, pb: Playbook, t: Trigger) -> list[dict]:
+def _block_lines(fs: FactSheet, pb: Playbook) -> list[str]:
+    """Everything the writer needs about ONE message (shared by the single and the batch prompt)."""
     customer = fs.send_as == "merchant_on_behalf"
     facts = select_facts(fs, pb)
     lines = [_voice_line(fs)]
@@ -107,9 +108,68 @@ def build_writer_messages(fs: FactSheet, pb: Playbook, t: Trigger) -> list[dict]
     lines.append("FACTS (lead with the first one):")
     for i, f in enumerate(facts):
         lines.append(f"{f.id}{' (lead)' if i == 0 else ''}: {f.text}")
+    return lines
+
+
+def _example_lines(fs: FactSheet) -> list[str]:
+    customer = fs.send_as == "merchant_on_behalf"
     ex_facts, ex_body = _EX_CUSTOMER if customer else _EX_MERCHANT.get(fs.category_slug, _EX_MERCHANT["salons"])
-    lines.append(f"STYLE EXAMPLE (different business; imitate the shape, never its facts):\nFACTS: {ex_facts}\nMESSAGE: {ex_body}")
+    return [f"STYLE EXAMPLE (different business; imitate the shape, never its facts):\nFACTS: {ex_facts}\nMESSAGE: {ex_body}"]
+
+
+def build_writer_messages(fs: FactSheet, pb: Playbook, t: Trigger) -> list[dict]:
+    lines = _block_lines(fs, pb) + _example_lines(fs)
     return [{"role": "system", "content": WRITER_SYSTEM}, {"role": "user", "content": "\n".join(lines)}]
+
+
+BATCH_SCHEMA = {
+    "type": "object",
+    "properties": {"messages": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"id": {"type": "string"}, "body": {"type": "string"},
+                       "cta": {"type": "string", "enum": ["binary_yes_stop", "open_ended", "none", "multi_choice_slot"]},
+                       "facts_used": {"type": "array", "items": {"type": "string"}}},
+        "required": ["id", "body", "cta", "facts_used"], "additionalProperties": False}}},
+    "required": ["messages"], "additionalProperties": False,
+}
+
+BATCH_SYSTEM = WRITER_SYSTEM.split("Output JSON:")[0].replace("ONE WhatsApp message", "several WhatsApp messages") + (
+    "You get several MESSAGE blocks (A, B, C...). Write exactly one message per block using ONLY that block's own facts; "
+    "never mix facts, names or numbers between blocks. Each block has its own salutation, language and ask.\n"
+    'Output JSON: {"messages": [{"id": "A", "body": string, "cta": "binary_yes_stop"|"open_ended"|"none"|"multi_choice_slot", '
+    '"facts_used": ["F1",...]}, ...]}')
+
+BATCH_IDS = "ABCD"
+
+
+def build_batch_messages(items: list[tuple[FactSheet, Playbook]]) -> list[dict]:
+    lines: list[str] = []
+    for i, (fs, pb) in enumerate(items):
+        lines.append(f"=== MESSAGE {BATCH_IDS[i]} ===")
+        lines += _block_lines(fs, pb)
+    lines += _example_lines(items[0][0])
+    return [{"role": "system", "content": BATCH_SYSTEM}, {"role": "user", "content": "\n".join(lines)}]
+
+
+def parse_batch(text: str) -> dict[str, dict]:
+    """id -> normalized output. Raises ValueError when nothing usable came back."""
+    t = _FENCE.sub("", (text or "").strip())
+    if not t.startswith("{"):
+        m = re.search(r"\{.*\}", t, re.S)
+        if not m:
+            raise ValueError("no JSON object in completion")
+        t = m.group(0)
+    obj = json.loads(t)
+    msgs = obj.get("messages") if isinstance(obj, dict) else None
+    if not isinstance(msgs, list) or not msgs:
+        raise ValueError("no messages array")
+    out: dict[str, dict] = {}
+    for m in msgs:
+        if isinstance(m, dict) and isinstance(m.get("id"), str) and isinstance(m.get("body"), str) and m["body"].strip():
+            out[m["id"].strip().upper()] = parse_output(json.dumps({**m, "rationale_note": ""}))
+    if not out:
+        raise ValueError("no usable messages")
+    return out
 
 
 def build_repair_messages(messages: list[dict], previous: dict, violations: list[str]) -> list[dict]:

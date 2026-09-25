@@ -8,7 +8,8 @@ from .llm.router import Lease, Router, estimate_tokens
 from .models import FactSheet
 from .normalize import Trigger
 from .playbooks import Playbook
-from .prompts import (MAX_TOKENS, MESSAGE_SCHEMA, build_repair_messages, build_writer_messages, parse_output)
+from .prompts import (BATCH_IDS, BATCH_SCHEMA, MAX_TOKENS, MESSAGE_SCHEMA, build_batch_messages, build_repair_messages,
+                      build_writer_messages, parse_batch, parse_output)
 from .verifier import hook_covered, verify
 
 log = logging.getLogger("vera.writer")
@@ -52,3 +53,31 @@ async def write_with_llm(router: Router, t: Trigger, fs: FactSheet, pb: Playbook
         log.info("llm repair for %s still failing: %s", t.id, violations)
         return None
     return fixed
+
+
+async def write_batch(router: Router, items: list[tuple[Trigger, FactSheet, Playbook, list[str]]], deadline_at: float,
+                      lease: Optional[Lease]) -> dict[str, dict]:
+    """One LLM call for up to 4 decisions. Returns trigger_id -> verified output; items that fail verification are simply
+    absent (the caller uses the template for them). No per-item repair: a batch is an economy measure."""
+    messages = build_batch_messages([(fs, pb) for _, fs, pb, _ in items])
+    max_tokens = MAX_TOKENS * len(items)
+    if lease is None:
+        lease = await router.acquire(estimate_tokens(messages, max_tokens))
+    if lease is None:
+        return {}
+    got = await router.run(lease, messages, max_tokens=max_tokens, validate=parse_batch, deadline_at=deadline_at,
+                           schema=BATCH_SCHEMA)
+    if got is None:
+        return {}
+    parsed, _ = got
+    out: dict[str, dict] = {}
+    for i, (t, fs, pb, recent) in enumerate(items):
+        cand = parsed.get(BATCH_IDS[i])
+        if cand is None:
+            continue
+        problems = check(cand, fs, recent)
+        if problems:
+            log.info("batch draft for %s rejected: %s", t.id, problems)
+            continue
+        out[t.id] = cand
+    return out

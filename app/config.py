@@ -44,6 +44,7 @@ class Settings:
     model_tpd: int
     llm_call_timeout_s: int
     llm_seed: int
+    llm_batch_size: int   # >1: compose several decisions per LLM call
 
     tick_deadline_s: float
     reply_deadline_s: float
@@ -88,6 +89,7 @@ class Settings:
             model_tpd=_i("MODEL_TPD", 200000),
             llm_call_timeout_s=_i("LLM_CALL_TIMEOUT_S", 12),
             llm_seed=_i("LLM_SEED", 7),
+            llm_batch_size=max(1, min(_i("LLM_BATCH_SIZE", 1), 4)),
             tick_deadline_s=float(min(_i("TICK_DEADLINE_S", 20), VERCEL_MAX_DURATION_S - 5)),
             reply_deadline_s=float(min(_i("REPLY_DEADLINE_S", 15), VERCEL_MAX_DURATION_S - 5)),
             max_actions_per_tick=_i("MAX_ACTIONS_PER_TICK", 20),

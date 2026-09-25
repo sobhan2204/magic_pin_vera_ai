@@ -44,6 +44,7 @@ class ComposeEnv:
     lease: Optional[Lease] = None                        # quota pre-reserved (in score order) by the tick
     cache_key: str = ""
     allow_llm: bool = True
+    llm_out: Optional[dict] = None                       # draft from a batch call (verified against recents here)
     cached: Optional[dict] = None                        # prefetched draft (None = miss)
     prefetched: bool = False
 
@@ -102,7 +103,10 @@ async def compose_message(env: ComposeEnv, t: Trigger, fs: FactSheet, recent_bod
             return _finish(t, pb, fs, cached["out"], f"cache:{cached['via']}", [])
 
     out, via = None, ""
-    if env.allow_llm and s.llm_mode == "mock":
+    if env.llm_out is not None:
+        if not verify(env.llm_out, fs, recent_bodies):
+            out, via = env.llm_out, "llm"
+    elif env.allow_llm and s.llm_mode == "mock":
         cand = mock_write(fs, pb, t.id)
         if not verify(cand, fs, recent_bodies):
             out, via = cand, "mock"
