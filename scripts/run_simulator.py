@@ -13,7 +13,14 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import urllib.request  # noqa: E402
+
 import judge_simulator as js  # noqa: E402
+
+# judge_simulator talks to providers with urllib; its default "Python-urllib" user agent is rejected (HTTP 403) by Groq.
+_opener = urllib.request.build_opener()
+_opener.addheaders = [("User-Agent", "Mozilla/5.0 (vera-bot-tests)")]
+urllib.request.install_opener(_opener)
 
 js.BOT_URL = os.environ.get("BOT_URL", "http://localhost:8080")
 js.LLM_PROVIDER = os.environ.get("SIM_PROVIDER", js.LLM_PROVIDER)

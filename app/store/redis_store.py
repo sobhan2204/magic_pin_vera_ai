@@ -45,6 +45,28 @@ return 1
 """
 
 
+# KEYS: minute hash, day hash, cooling key ; ARGV: est, n, rpm, tpm, rpd, tpd  -> number granted
+_QUOTA_RESERVE_N = """
+if redis.call('EXISTS', KEYS[3]) == 1 then return 0 end
+local est = math.max(1, tonumber(ARGV[1]))
+local n = tonumber(ARGV[2])
+local mr = tonumber(redis.call('HGET', KEYS[1], 'req') or '0')
+local mt = tonumber(redis.call('HGET', KEYS[1], 'tok') or '0')
+local dr = tonumber(redis.call('HGET', KEYS[2], 'req') or '0')
+local dt = tonumber(redis.call('HGET', KEYS[2], 'tok') or '0')
+local k = math.min(n, tonumber(ARGV[3]) - mr, tonumber(ARGV[5]) - dr,
+                   math.floor((tonumber(ARGV[4]) - mt) / est), math.floor((tonumber(ARGV[6]) - dt) / est))
+if k <= 0 then return 0 end
+redis.call('HINCRBY', KEYS[1], 'req', k)
+redis.call('HINCRBY', KEYS[1], 'tok', k * est)
+redis.call('EXPIRE', KEYS[1], 180)
+redis.call('HINCRBY', KEYS[2], 'req', k)
+redis.call('HINCRBY', KEYS[2], 'tok', k * est)
+redis.call('EXPIRE', KEYS[2], 172800)
+return k
+"""
+
+
 def _pairs_to_dict(res: Any) -> dict:
     if isinstance(res, dict):
         return res
@@ -141,6 +163,15 @@ class RedisStore(Store):
                                 args=[str(est_tokens), str(limits["rpm"]), str(limits["tpm"]),
                                       str(limits["rpd"]), str(limits["tpd"])])
         return {1: "ok", 2: "cooling"}.get(int(res), "quota")
+
+    async def quota_reserve_n(self, model, est_tokens, n, limits, ts):
+        if n <= 0:
+            return 0
+        mk, dk, ck = self._quota_keys(model, ts)
+        res = await self.r.eval(_QUOTA_RESERVE_N, keys=[mk, dk, ck],
+                                args=[str(est_tokens), str(n), str(limits["rpm"]), str(limits["tpm"]),
+                                      str(limits["rpd"]), str(limits["tpd"])])
+        return max(0, int(res))
 
     async def quota_adjust(self, model, delta_tokens, ts, delta_requests=0):
         mk, dk, _ = self._quota_keys(model, ts)

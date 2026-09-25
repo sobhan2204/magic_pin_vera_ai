@@ -6,11 +6,12 @@ days to a deadline, percentages) are computed in code and added as facts.
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from .humanize import (
-    plural, days_between, fmt_date, fmt_money, fmt_num, fmt_pct, fmt_time, first_sentence, humanize_signal,
+    plural, days_between, fmt_date, fmt_month_year, fmt_money, fmt_num, fmt_pct, fmt_time, first_sentence, humanize_signal,
     humanize_trend, join_and, months_between, parse_dt, strip_end, words,
 )
 from .models import Fact, FactSheet
@@ -25,6 +26,8 @@ _METRICS = {"ctr": ("click-through rate", "is"), "views": ("views", "are"), "cal
             "review_count": ("reviews", "are")}
 _THEMES = {"delivery_late": "late delivery", "wait_time": "long waits", "saturday_wait": "Saturday waits"}
 _MON = "jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec"
+_DEFAULT_DIGEST = {"research_digest": ("research", "trend", "tech"), "regulation_change": ("compliance",),
+                   "cde_opportunity": ("cde",), "supply_alert": ("alert",)}
 
 
 def _window(w: Any) -> str:
@@ -70,6 +73,9 @@ class Ctx:
     def has(self, key: str) -> bool:
         return any(f.key == key for f in self.facts)
 
+    def get(self, key: str):
+        return next((f for f in self.facts if f.key == key), None)
+
     # --- helpers -----------------------------------------------------------------------
     @property
     def peer(self) -> dict:
@@ -88,6 +94,11 @@ class Ctx:
         if wanted:
             for it in self.cat.get("digest") or []:
                 if isinstance(it, dict) and it.get("id") == wanted:
+                    return it
+            return None                                   # an explicit id that we cannot find is a missing join
+        for kind in _DEFAULT_DIGEST.get(self.t.kind, ()):   # no id at all: use the category's latest item of that kind
+            for it in self.cat.get("digest") or []:
+                if isinstance(it, dict) and it.get("kind") == kind and it.get("title"):
                     return it
         return None
 
@@ -182,7 +193,13 @@ def _recall(c: Ctx) -> bool:
 
 def _lapsed_soft(c: Ctx) -> bool:
     ago = _months_hook(c)
-    c.add("hook", (ago + ", so a quick check-up is due") if ago else "We haven't seen you in a while", "customer.relationship")
+    last = parse_dt(((c.cust or {}).get("relationship") or {}).get("last_visit"))
+    if ago:
+        c.add("hook", ago + ", so a quick check-up is due", "customer.relationship")
+    elif last:
+        c.add("hook", f"Your last visit with us was on {fmt_date(last)}", "customer.relationship")
+    else:
+        c.add("hook", "We haven't seen you in a while", "customer.relationship")
     c.collect_slots(c.p.get("available_slots"))
     return True
 
@@ -391,9 +408,9 @@ def _planning(c: Ctx) -> bool:
     topic = c.p.get("intent_topic")
     if not topic:
         return False
-    c.add("hook", f"Following up on your {words(topic)} idea: I've put together a first draft covering the offer, "
-                  f"who it's for and how to announce it", "trigger.intent_topic")
-    c.add("t.draft", "Nothing goes out without your go-ahead", "playbook")
+    c.add("hook", f"You asked about your {words(topic)} idea, so here's a starter outline to edit", "trigger.intent_topic")
+    c.add("t.draft", "Outline: who it's for, what's included, how you price it against your current offers, and the announcement "
+                     "message. Nothing goes out without your go-ahead", "playbook")
     return True
 
 
@@ -419,7 +436,8 @@ def _competitor(c: Ctx) -> bool:
 
 
 def _gbp(c: Ctx) -> bool:
-    if c.p.get("verified") is not False:
+    verified = c.p.get("verified", c.ident.get("verified"))
+    if verified is not False:
         return False
     path = f" — it can be done by {words(c.p['verification_path'])}" if c.p.get("verification_path") else ""
     c.add("hook", f"Your Google Business Profile is not verified yet{path}", "trigger.verified")
@@ -480,15 +498,61 @@ def _generic_hook(c: Ctx) -> None:
         if bits:
             c.add("hook", "Here's something worth a look: " + "; ".join(bits), "trigger.payload")
             return
-    for sig in c.m.get("signals") or []:
-        h = humanize_signal(sig)
-        if h:
-            c.add("hook", f"One thing stood out on your profile: {h}", "merchant.signals")
+
+
+# What to lead with when the trigger payload carries no data (all generated triggers): first a trigger-specific fact derived
+# from the merchant/category context, then an honest kind-level statement, then the strongest merchant fact.
+_FALLBACK_KEYS = {
+    "perf_dip": ("m.week_down", "m.views_below", "m.calls_below"),
+    "perf_spike": ("m.week_up", "m.views_above", "m.calls_above"),
+    "seasonal_perf_dip": ("cat.season",),
+    "renewal_due": ("m.subscription",),
+    "winback_eligible": ("m.expired",),
+    "dormant_with_vera": ("m.dormant",),
+    "review_theme_emerged": ("m.review",),
+    "festival_upcoming": ("cat.season",),
+    "category_seasonal": ("cat.season", "cat.trend"),
+}
+_KIND_STATEMENT = {
+    "perf_dip": "Your profile numbers have dipped recently",
+    "perf_spike": "Your profile numbers picked up recently",
+    "seasonal_perf_dip": "Your profile numbers have dipped, which is common at this time of year",
+    "competitor_opened": "A new competitor has opened near you",
+    "milestone_reached": "You're close to a new milestone on your profile",
+    "review_theme_emerged": "Recent reviews are showing a recurring theme",
+    "festival_upcoming": "A festival is coming up",
+    "category_seasonal": "Demand is shifting with the season",
+    "ipl_match_today": "There's an IPL match on today",
+    "active_planning_intent": "Following up on the idea you shared with me",
+    "renewal_due": "Your plan is coming up for renewal",
+    "winback_eligible": "Your plan has lapsed and your profile is slowing down",
+    "dormant_with_vera": "It's been a while since we last spoke",
+    "gbp_unverified": "Your Google Business Profile still needs verification",
+    "supply_alert": "A supply alert has been issued for your category",
+}
+_GENERIC_ORDER = ("m.week", "m.views_peer", "m.calls_peer", "m.ctr", "m.lapsed", "m.retention", "m.perf30", "cat.trend", "cat.season")
+
+
+def _fallback_hook(c: Ctx) -> None:
+    def promote(fact: Fact) -> None:
+        c.facts.remove(fact)
+        c.facts.insert(0, replace(fact, key="hook"))
+
+    for key in _FALLBACK_KEYS.get(c.t.kind, ()):
+        f = next((x for x in c.facts if x.key == key), None)
+        if f:
+            promote(f)
             return
-    if c.perf.get("views") is not None:
-        c.add("hook", "Quick profile check-in", "merchant.performance")
-    else:
-        c.add("hook", "Here's a quick update on your profile", "merchant.performance")
+    stmt = _KIND_STATEMENT.get(c.t.kind)
+    if stmt:
+        c.facts.insert(0, Fact(id="", key="hook", text=stmt, atoms=set(), source="trigger.kind"))
+        return
+    for key in _GENERIC_ORDER:
+        f = next((x for x in c.facts if x.key == key), None)
+        if f:
+            promote(f)
+            return
+    c.facts.insert(0, Fact(id="", key="hook", text="Here's a quick update on your profile", atoms=set(), source="merchant"))
 
 
 # ================================ merchant / customer facts ===================================
@@ -532,17 +596,36 @@ def _merchant_facts(c: Ctx) -> None:
         if isinstance(perf.get(key), (int, float)) and isinstance(pv, (int, float)):
             c.add(f"m.{key}_peer", f"Your {win}-day {name} are {fmt_num(perf[key])} against a peer average of {fmt_num(pv)}",
                   f"merchant.performance.{key}")
+    for key, peer_key in (("views", "avg_views_30d"), ("calls", "avg_calls_30d")):
+        pv = c.peer.get(peer_key)
+        fact = c.get(f"m.{key}_peer")
+        if fact and isinstance(perf.get(key), (int, float)) and isinstance(pv, (int, float)) and perf[key] != pv:
+            c.add(f"m.{key}_{'below' if perf[key] < pv else 'above'}", fact.text, f"merchant.performance.{key}")
     d7 = perf.get("delta_7d") or {}
     for key, name in (("views_pct", "views"), ("calls_pct", "calls")):
         v = d7.get(key)
         if isinstance(v, (int, float)) and v != 0:
-            c.add("m.week", f"This week your {name} are {'up' if v > 0 else 'down'} {fmt_pct(v)}", "merchant.performance.delta_7d")
+            text = f"This week your {name} are {'up' if v > 0 else 'down'} {fmt_pct(v)}"
+            c.add("m.week", text, "merchant.performance.delta_7d")
+            c.add("m.week_up" if v > 0 else "m.week_down", text, "merchant.performance.delta_7d")
             break
+    hist = [h for h in (m.get("conversation_history") or []) if isinstance(h, dict)]
+    last_ts = parse_dt(hist[-1].get("ts")) if hist else None
+    quiet = (c.now - last_ts).days if last_ts else None
+    if quiet is None:
+        for sig in m.get("signals") or []:
+            mm = re.match(r"dormant_with_vera_(\d+)d$", str(sig))
+            if mm:
+                quiet = int(mm.group(1))
+    if quiet and quiet >= 1:
+        c.add("m.dormant", f"It's been {plural(quiet, 'day')} since we last spoke", "merchant.conversation_history")
     sub = m.get("subscription") or {}
     if sub.get("status") == "active" and sub.get("days_remaining") is not None:
         c.add("m.subscription", f"Your {sub.get('plan', '')} plan has {sub['days_remaining']} days left".replace("  ", " "), "merchant.subscription")
     elif sub.get("status") == "expired" and sub.get("days_since_expiry"):
-        c.add("m.subscription", f"Your plan expired {sub['days_since_expiry']} days ago", "merchant.subscription")
+        text = f"Your plan expired {plural(sub['days_since_expiry'], 'day')} ago"
+        c.add("m.subscription", text, "merchant.subscription")
+        c.add("m.expired", text, "merchant.subscription")
     for th in m.get("review_themes") or []:
         if isinstance(th, dict) and th.get("theme") and th.get("occurrences_30d"):
             verb = "praise" if th.get("sentiment") == "pos" else "mention"
@@ -590,8 +673,16 @@ def _customer_facts(c: Ctx) -> None:
     n = months_between(parse_dt(rel.get("last_visit")), c.now)
     if n:
         c.add("c.months", f"It's been {n} months since your last visit", "customer.relationship.last_visit")
+    last = parse_dt(rel.get("last_visit"))
+    if last:
+        c.add("c.lastvisit", f"Your last visit with us was on {fmt_date(last)}", "customer.relationship.last_visit")
+    first = parse_dt(rel.get("first_visit"))
+    if first:
+        c.add("c.since", f"You've been with us since {fmt_month_year(first)}", "customer.relationship.first_visit")
     if rel.get("visits_total"):
-        c.add("c.visits", f"You've visited {rel['visits_total']} times so far", "customer.relationship.visits_total")
+        c.add("c.visits", f"You've visited {plural(rel['visits_total'], 'time')} so far", "customer.relationship.visits_total")
+    if rel.get("favourite_dish"):
+        c.add("c.fav", f"Your favourite with us is {rel['favourite_dish']}", "customer.relationship.favourite_dish", (rel["favourite_dish"],))
     slots_pref = (cu.get("preferences") or {}).get("preferred_slots")
     if slots_pref:
         c.add("c.pref", f"You prefer {words(slots_pref)} slots", "customer.preferences.preferred_slots")
@@ -625,7 +716,9 @@ def make_salutation(category_slug: str, merchant: dict) -> str:
     ident = merchant.get("identity") or {}
     owner = ident.get("owner_first_name")
     if owner:
-        return f"Dr. {owner}" if category_slug == "dentists" else owner
+        if category_slug == "dentists" and not re.match(r"^dr\b\.?", owner.strip(), re.I):
+            return f"Dr. {owner}"
+        return owner.strip()
     return ident.get("name", "there")
 
 
@@ -639,12 +732,18 @@ def build_factsheet(trigger: Trigger, merchant: dict, category: dict, customer: 
         if trigger.kind in _STRICT:
             return None                       # required digest item not found -> missing join
         _generic_hook(c)
-    if not c.has("hook"):
-        _generic_hook(c)
     _merchant_facts(c)
     _category_facts(c)
     if customer:
         _customer_facts(c)
+    if not c.has("hook"):
+        _fallback_hook(c)
+    if trigger.scope == "customer" and customer:
+        # A message to a customer may only use the trigger, the customer's own data and the offer price: never the merchant's
+        # subscription, performance, peer benchmarks or internal history.
+        c.facts = [f for f in c.facts if f.key == "hook" or f.key.startswith(("t.", "c.")) or f.key == "m.offer_price"]
+    for i, f in enumerate(c.facts):           # ids follow the final order (F1 is always the hook)
+        f.id = f"F{i + 1}"
 
     slug = merchant.get("category_slug") or category.get("slug", "")
     ident = merchant.get("identity") or {}

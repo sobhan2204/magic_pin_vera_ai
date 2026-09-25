@@ -83,7 +83,10 @@ async def chat_completion(*, base_url: str, api_key: str, model: str, messages: 
         raise LLMError("bad_request", f"HTTP {r.status_code}: {r.text[:200]}")
     try:
         data = r.json()
-        text = data["choices"][0]["message"]["content"] or ""
+        choice = data["choices"][0]
+        text = choice["message"]["content"] or ""
+        if not text.strip() and choice.get("finish_reason") == "length":
+            raise LLMError("bad_output", "completion truncated: reasoning used the whole token budget")
     except (ValueError, KeyError, IndexError, TypeError) as e:
         raise LLMError("bad_output", "unparseable completion envelope") from e
     usage = data.get("usage") or {}

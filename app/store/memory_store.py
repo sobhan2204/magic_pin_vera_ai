@@ -118,6 +118,22 @@ class MemoryStore(Store):
                 c["tok"] += est_tokens
             return "ok"
 
+    async def quota_reserve_n(self, model, est_tokens, n, limits, ts):
+        async with self._lock:
+            if self._cool.get(model, 0) > _time.time() or n <= 0:
+                return 0
+            mstamp, dstamp = rl_stamps(ts)
+            m = self._quota.setdefault(f"{model}:m:{mstamp}", {"req": 0, "tok": 0})
+            d = self._quota.setdefault(f"{model}:d:{dstamp}", {"req": 0, "tok": 0})
+            est = max(1, est_tokens)
+            k = min(n, limits["rpm"] - m["req"], limits["rpd"] - d["req"],
+                    (limits["tpm"] - m["tok"]) // est, (limits["tpd"] - d["tok"]) // est)
+            k = max(0, k)
+            for c in (m, d):
+                c["req"] += k
+                c["tok"] += k * est_tokens
+            return k
+
     async def quota_adjust(self, model, delta_tokens, ts, delta_requests=0):
         async with self._lock:
             for stamp, kind in zip(rl_stamps(ts), ("m", "d")):

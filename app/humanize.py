@@ -57,6 +57,10 @@ def fmt_date(dt: Optional[datetime]) -> str:
     return f"{dt.day} {_MONTHS[dt.month - 1]}" if dt else ""
 
 
+def fmt_month_year(dt: Optional[datetime]) -> str:
+    return f"{_MONTHS[dt.month - 1]} {dt.year}" if dt else ""
+
+
 def fmt_time(dt: Optional[datetime]) -> str:
     if not dt:
         return ""

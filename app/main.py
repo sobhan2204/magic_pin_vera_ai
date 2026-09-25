@@ -12,7 +12,7 @@ from typing import Any, Optional
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from .config import MAX_CONTEXT_BYTES, get_settings
+from .config import MAX_CONTEXT_BYTES, get_settings, load_dotenv
 from .models import ReplyOut
 from .replies.handler import handle_reply
 from .store import get_store
@@ -21,6 +21,8 @@ from .tick import run_tick
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 log = logging.getLogger("vera.api")
+
+load_dotenv()                      # local runs only; no-op on Vercel and under pytest
 
 app = FastAPI(title="Vera merchant bot", docs_url=None, redoc_url=None, openapi_url=None)
 

@@ -17,7 +17,7 @@ def event_key(t: Trigger) -> str:
 
 
 def check_policy(t: Trigger, merchant: Optional[dict], category: Optional[dict], customer: Optional[dict],
-                 mstate: dict, cstate: dict, now: datetime, already_sent: bool) -> tuple[bool, str]:
+                 mstate: dict, cstate: dict, now: datetime, already_sent: bool, consent_mode: str = "strict") -> tuple[bool, str]:
     if not t.merchant_id or not merchant:
         return False, "missing_merchant"
     if not category:
@@ -39,7 +39,7 @@ def check_policy(t: Trigger, merchant: Optional[dict], category: Optional[dict],
         if not consent.get("opted_in_at") and not scopes:
             return False, "no_consent"
         wanted = get_playbook(t.kind).consent
-        if wanted and not (set(wanted) & set(scopes)):
+        if consent_mode == "strict" and wanted and not (set(wanted) & set(scopes)):
             return False, "consent_scope_mismatch"
         if not wanted and not scopes:
             return False, "no_consent"

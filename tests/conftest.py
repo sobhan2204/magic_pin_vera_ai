@@ -1,5 +1,6 @@
 import os
 
+os.environ["VERA_NO_DOTENV"] = "1"          # tests must never pick up real keys from .env
 os.environ["STORE_BACKEND"] = "memory"
 os.environ["LLM_MODE"] = "mock"
 os.environ.pop("DEBUG_TOKEN", None)

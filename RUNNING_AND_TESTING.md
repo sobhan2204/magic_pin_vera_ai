@@ -66,11 +66,11 @@ Stop a background server on Windows: `Get-CimInstance Win32_Process | ? { $_.Com
 ## 4. The test suite
 
 ```powershell
-pytest -q                 # ~265 tests, mock LLM, in-memory store, ~15 s, zero API calls
+pytest -q                 # ~295 tests, mock LLM, in-memory store, ~15 s, zero API calls
 pytest -m live -s         # opt-in: a handful of REAL Groq calls (needs GROQ_API_KEY, ~10k tokens)
 $env:UPSTASH_REDIS_REST_URL="..."; $env:UPSTASH_REDIS_REST_TOKEN="..."; pytest tests/test_store.py -q   # also runs the Lua scripts on a real DB (prefix vera_test:)
 ```
-Expected: `263 passed, 5 skipped` (the 5 skips are the Redis-only store tests when no Upstash URL is set).
+Expected: `289 passed, 6 skipped` (the 5 skips are the Redis-only store tests when no Upstash URL is set).
 
 | File | Covers |
 |---|---|
@@ -298,3 +298,40 @@ Check remaining quota: Groq console -> Limits/Usage, or `GET /v1/_debug?token=$D
 
 Estimated **one complete judge run ≈ 6-9k commands** (255 warmup contexts, ~130 incremental contexts, 12 ticks, ~100 actions, ~150
 replies), plus ~300/day for UptimeRobot. That is ~60-80 full runs per month on the free plan; the smoke/harness runs count too.
+
+
+---
+
+## 14. Live verification notes (real Upstash + Groq + Cerebras, run on 2026-09-26)
+
+Local convenience: `app/main.py` loads `.env` automatically for local runs (real environment variables win; it is skipped on Vercel and
+under pytest). Scripts that use the real services: `scripts/probe.py` (Redis latency + one real call per LLM target),
+`scripts/score_sample.py` (scores the bot's real messages with the official judge prompt, using a judge model that is not one of the
+bot's), `scripts/run_simulator.py` (official simulator, with the user-agent fix below).
+
+What the live run showed, and what changed because of it:
+
+* **Redis latency is ~270 ms per command from a laptop.** The tick therefore batches its reads (`asyncio.gather`), reserves all LLM
+  leases with one atomic Lua call (`quota_reserve_n`) and the reply handler fetches its four independent values together. **On Vercel,
+  create the function in the same region as the Upstash database** (Vercel project -> Settings -> Functions -> Region; Upstash
+  console shows the DB region). A cross-continent pair costs seconds per request.
+* **Cerebras (`ALT_*`)** works, but without `reasoning_effort: "low"` it spends the whole token budget thinking and returns empty
+  content. gpt-oss models now always get `low` on every provider. `ALT_JSON_MODE=schema` enables strict structured output for it.
+  Alt-provider free-tier limits are separate: `ALT_MODEL_RPM/TPM/RPD/TPD` (default = `MODEL_*`).
+* **Real 429s happen** even with local accounting (shared account limits). The router cools that model for 60 s and fails over; a full
+  run had 6 such 429s and zero failed requests.
+* **Generated triggers have placeholder payloads** (75 of the 100). They now lead with a real fact derived from the merchant/category
+  data, or an honest kind-level statement, never "quick profile check-in". Digest kinds with no id use the category's latest item of
+  that kind; an explicit unknown id is still a missing join.
+* **Customer-facing messages never see merchant-internal facts** (subscription, peer benchmarks, performance). This was a real bug
+  found by scoring: the LLM had written "Your Pro plan has 16 days left" to a customer.
+* **LLM drafts are additionally rejected** for invented causes/advice (speculation words, and any sentence before the ask that shares
+  no content word with a fact) and for units that do not match the facts ("95 customers" is not "95%").
+* **`CONSENT_MODE`**: the generated dataset gives every generated customer only `["promotional_offers"]`, so `strict` (default; scope
+  must cover the trigger kind) sends nothing for ~25% of generated customer triggers (recall_due, customer_lapsed_soft,
+  appointment_tomorrow, chronic_refill_due, trial_followup). `lenient` sends to any customer with an active consent.
+* **`judge_simulator.py` bug on Groq**: its `urllib` user agent is rejected by Groq with HTTP 403. `scripts/run_simulator.py` and
+  `scripts/score_sample.py` work around it without editing the file.
+* **Scores with the official judge prompt** (a non-gpt-oss judge model, noisy +-9 per message): messages built from real trigger payloads
+  ~35-43/50; messages for placeholder-payload triggers ~20-30/50. That judge only sees a subset of the merchant/customer fields, so
+  it also flags true facts from other fields as "invented".

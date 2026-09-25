@@ -90,3 +90,20 @@ def test_hi_en_needs_code_mix(dataset, meera_fs):
              "for high-risk adult caries. Would it help to have the abstract pulled and a patient WhatsApp drafted?")
     assert any("Hindi-English" in x for x in verify(out(plain), meera_fs))
 
+
+
+def test_number_must_keep_its_unit(meera_fs):
+    # fact says "124 high-risk adult patients", "2.1%"-style values are percentages, counts are not
+    v = verify(out(GOOD.replace("38%", "38%") + " Ye 124% patients ka case hai."), meera_fs)
+    assert any("124%" in x for x in v)
+    ok = verify(out(GOOD.replace("Kya aap", "Aapke 124 patients high-risk hain. Kya aap")), meera_fs)
+    assert not any("124" in x for x in ok)
+    bad = verify(out(GOOD.replace("Kya aap", "Aapke 38 patients high-risk hain. Kya aap")), meera_fs)
+    assert any("38 patient" in x for x in bad)                 # 38 is a percentage in the facts, not a patient count
+
+
+def test_unit_pairs_examples():
+    from app.verifier import unit_pairs
+    assert unit_pairs("95 of your customers haven't visited in over 180 days", loose=True) >= {("95", "customer"), ("180", "day")}
+    assert ("95", "%") not in unit_pairs("95 of your customers", loose=True)
+    assert unit_pairs("Dental Cleaning @ ₹1,499 within 1.3 km, 3-month recall") >= {("1499", "₹"), ("1.3", "km"), ("3", "month")}

@@ -28,9 +28,9 @@ MESSAGE_SCHEMA = {
 }
 
 WRITER_SYSTEM = """You write ONE WhatsApp message for Vera, magicpin's merchant assistant, and reply with JSON only.
-CLOSED WORLD: use ONLY the numbered FACTS. Never add any number, price, date, name, place, product, offer, freebie, study or claim that is not in them. If unsure, leave it out. Copy numbers, prices and names exactly as written.
+CLOSED WORLD: use ONLY the numbered FACTS. Never add any number, price, date, name, place, product, offer, freebie, study or claim that is not in them. If unsure, leave it out. Copy numbers, prices and names exactly as written. Keep the exact meaning of each fact (\"gone quiet\" is not \"ignored you\"). Do not explain why numbers moved and do not predict effects or risks; state the facts, then offer the next step.
 STRUCTURE: begin with the salutation, then the lead fact (why now) in the first sentence. At most one supporting fact. Exactly ONE ask, in the LAST sentence (at most one "?"). Usually 2-4 sentences, under 480 characters. Give the reader something to gain or lose. No preamble, no self-introduction, no hype, no ALL CAPS, no URLs. Prefer service+price wording over "% off".
-Say it in plain shop-owner language. Never mention internal words: trigger, signal, payload, context, field names, snake_case.
+EVERY sentence before the ask must restate one listed FACT in your own words. Add no advice, diagnosis, recommendation, cause or promise of your own; the only thing you may propose is the single ask. Say it in plain shop-owner language. Never mention internal words: trigger, signal, payload, context, field names, snake_case.
 Output JSON: {"body": string, "cta": "binary_yes_stop"|"open_ended"|"none"|"multi_choice_slot", "facts_used": ["F1",...], "rationale_note": short string}"""
 
 # Own-wording exemplars (illustrative facts, deliberately different from the dataset) -> shape, not text.
@@ -55,14 +55,22 @@ _FACT_ORDER_EXTRA = ("t.prev_hook",)
 def select_facts(fs: FactSheet, pb: Playbook) -> list:
     chosen, seen = [], set()
 
+    texts: set[str] = set()
+
     def take(f) -> None:
-        if f and f.id not in seen and len(chosen) < MAX_FACTS:
+        if f and f.id not in seen and f.text not in texts and len(chosen) < MAX_FACTS:
             seen.add(f.id)
+            texts.add(f.text)
             chosen.append(f)
 
-    take(fs.get("hook"))
-    for k in (*_FACT_ORDER_EXTRA, *pb.support_keys):
+    hook = fs.get("hook")
+    take(hook)
+    statement = bool(hook and hook.source == "trigger.kind")
+    keys = pb.statement_support if (statement and pb.statement_support is not None) else pb.support_keys
+    for k in (*_FACT_ORDER_EXTRA, *keys):
         take(fs.get(k))
+    if statement and pb.statement_support == ():
+        return chosen                                   # kind-level statement only: give the writer nothing unrelated to add
     for f in fs.facts:
         take(f)
     return chosen
@@ -84,6 +92,9 @@ def _voice_line(fs: FactSheet) -> str:
 def ask_example(fs: FactSheet, pb: Playbook) -> str:
     from .fallback import _slot_ask
     slot = _slot_ask(fs, pb)
+    hook = fs.get("hook")
+    if not slot and hook and hook.source == "trigger.kind" and pb.stmt_ask_en:
+        return pb.stmt_ask_hi if fs.language == "hi-en" and pb.stmt_ask_hi else pb.stmt_ask_en
     return slot or (pb.ask_hi if fs.language == "hi-en" else pb.ask_en)
 
 

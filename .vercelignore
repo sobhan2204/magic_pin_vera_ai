@@ -1,4 +1,6 @@
+.env
 tests
+magicpin-ai-challenge
 scripts
 dataset
 examples

@@ -33,6 +33,30 @@ _SNAKE = re.compile(r"\b[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+\b")
 _URL = re.compile(r"https?://|www\.|\b[\w-]+\.(?:com|in|org|net|co|io|app)\b", re.I)
 
 
+_UNIT_WORDS = r"(?:day|month|week|year|review|patient|member|customer|call|view)s?"
+_PCT = re.compile(r"(?<![A-Za-z0-9_])(\d[\d,]*(?:\.\d+)?)\s*%")
+_RUPEE = re.compile(r"\u20b9\s*(\d[\d,]*(?:\.\d+)?)")
+_KM = re.compile(r"(?<![A-Za-z0-9_])(\d[\d,]*(?:\.\d+)?)\s*km\b", re.I)
+_UNIT_TIGHT = re.compile(rf"(?<![A-Za-z0-9_])(\d[\d,]*(?:\.\d+)?)\s*-?\s*({_UNIT_WORDS})\b", re.I)
+_UNIT_LOOSE = re.compile(rf"(?<![A-Za-z0-9_])(\d[\d,]*(?:\.\d+)?)\s*-?\s*(?:[A-Za-z\-]+\s+){{0,2}}?({_UNIT_WORDS})\b", re.I)
+
+
+def _unit(u: str) -> str:
+    u = u.lower()
+    return u[:-1] if u.endswith("s") else u
+
+
+def unit_pairs(text: str, loose: bool = False) -> set[tuple[str, str]]:
+    """(number, unit) bindings such as ('95','%'), ('299','\u20b9'), ('4','month'). `loose` lets facts license
+    'in the last 30 days' / '24 more customers' style phrasing; the message side is matched tightly."""
+    out = {(norm_number(m.group(1)), "%") for m in _PCT.finditer(text)}
+    out |= {(norm_number(m.group(1)), "\u20b9") for m in _RUPEE.finditer(text)}
+    out |= {(norm_number(m.group(1)), "km") for m in _KM.finditer(text)}
+    rx = _UNIT_LOOSE if loose else _UNIT_TIGHT
+    out |= {(norm_number(m.group(1)), _unit(m.group(2))) for m in rx.finditer(text)}
+    return out
+
+
 def norm_number(tok: str) -> str:
     t = tok.replace(",", "").rstrip(".")
     try:
@@ -52,7 +76,7 @@ def extract_numbers(text: str, strip_allowed: bool = False) -> set[str]:
 
 
 def _sentences(body: str) -> list[str]:
-    b = re.sub(r"\bDr\.", "Dr", body)
+    b = re.sub(r"\b(Dr|Mr|Mrs|Ms|Shri|Smt)\.", r"\1", body)
     return [s for s in re.split(r"(?<=[.!?])\s+|\n+", b) if s.strip()]
 
 
@@ -82,6 +106,43 @@ def verify_rationale(rationale: str, body: str, fs: FactSheet, kind_words: str) 
     if _URL.search(rationale):
         v.append("rationale contains a URL")
     return v
+
+
+_FILLER = {
+    "your", "you", "that", "this", "with", "from", "have", "been", "were", "will", "into", "about", "also", "which", "while",
+    "aapke", "aapka", "aapki", "aapko", "hain", "hota", "hote", "gaye", "hue", "hue", "jabki", "jaisa", "isse", "isliye", "saath",
+    "yeh", "wahi", "bhi", "sirf", "abhi", "kaafi", "mein", "pichle", "pichla", "kuch", "sabse", "zyada", "jyada", "lekin", "aur",
+    "toh", "liye", "kiya", "kiye", "hoga", "rahe", "raha", "rahi", "chal", "upar", "neeche",
+}
+
+
+def ungrounded_sentences(body: str, fs: FactSheet) -> list[str]:
+    """Sentences (other than the final ask) that neither carry a grounded number nor share a content word with any fact.
+    Catches invented diagnoses/advice that contain no numbers, e.g. 'Ye low engagement ka sanket hai'."""
+    sents = _sentences(body)
+    if len(sents) < 2:
+        return []
+    own = {w.lower() for w in _WORD.findall(fs.salutation + " " + fs.merchant_name)}
+    vocab: set[str] = set()
+    licensed: set[str] = set()
+    for f in fs.facts:
+        vocab |= {w.lower() for w in _WORD.findall(f.text) if len(w) > 3}
+        licensed |= f.atoms | extract_numbers(f.text)
+    vocab -= own | _FILLER
+    bad = []
+    for s in sents[:-1]:
+        if re.search(r"\breply\b", s, re.I):
+            continue
+        if fs.send_as == "merchant_on_behalf" and re.match(r"^(hi|hello|namaste)\b", s.strip(), re.I) and len(s) < 90:
+            continue                                     # "Hi Priya, <clinic> here." is the customer greeting
+        if extract_numbers(s, strip_allowed=True) & licensed:
+            continue
+        content = {w.lower() for w in _WORD.findall(s) if len(w) > 3} - own - _FILLER
+        if not content:
+            continue
+        if len(content & vocab) / len(content) < 0.25:
+            bad.append(s.strip())
+    return bad
 
 
 def hook_covered(body: str, fs: FactSheet) -> bool:
@@ -134,6 +195,14 @@ def verify(out: Any, fs: FactSheet, recent_bodies: Iterable[str] = (), *, reply_
     licensed |= extract_numbers(extra_text)
     for n in sorted(extract_numbers(body, strip_allowed=True) - licensed):
         v.append(f"number {n!r} is not in the facts")
+    # a grounded number must also keep its meaning: "95 customers" is not "95%"
+    stated: set[tuple[str, str]] = set()
+    for f in fs.facts:
+        stated |= unit_pairs(f.text, loose=True)
+    stated |= unit_pairs(extra_text, loose=True)
+    for n, u in sorted(unit_pairs(body) - stated):
+        if n in licensed:
+            v.append(f"{n}{'' if u in ('%', 'km') else ' '}{u} is not stated that way in the facts")
 
     # 3. entity grounding (capitalised words that are not sentence-initial)
     ok = allowed_tokens(fs, extra_text)

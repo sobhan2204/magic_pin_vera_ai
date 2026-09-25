@@ -7,7 +7,7 @@ import httpx
 import pytest
 import respx
 
-from app.compose import ComposeEnv, compose_message, draft_cache_key
+from app.compose import ComposeEnv, compose_message, compose_template, draft_cache_key
 from app.config import get_settings, reset_settings
 from app.humanize import parse_dt
 from app.llm.client import LLMResult
@@ -179,3 +179,44 @@ async def test_llm_is_not_used_for_opt_out_hostile_or_commitment(live_reply, cli
                        ("can you help with my GST", "c4")):
         await _reply(client, text, conv)
     assert route.call_count == 0
+
+
+def test_llm_drafts_with_invented_consequences_are_rejected(dataset):
+    from app.writer import check
+    trig, fs = sheet(dataset, "trg_004_perf_dip_bharat")
+    good = ("Dr. Bharat, your calls are down 50% over the last 7 days (your usual is 12). "
+            "Kya main dekh loon ki kya badla hai aur ek fix suggest kar doon?")
+    assert check({"body": good, "cta": "open_ended", "facts_used": []}, fs, []) == []
+    for bad in (good.replace("(your usual is 12)", "(your usual is 12), which puts your patients at risk"),
+                good.replace("Kya main", "Isse aapke potential patients miss ho rahe hain. Kya main"),
+                good.replace("Kya main", "Customers ne aapko ignore kiya hai. Kya main")):
+        assert any("speculative" in v for v in check({"body": bad, "cta": "open_ended", "facts_used": []}, fs, [])), bad
+
+
+def test_ungrounded_sentence_check_catches_invented_advice_and_never_flags_our_templates(dataset):
+    from app.verifier import ungrounded_sentences
+    trig, fs = sheet(dataset, "trg_004_perf_dip_bharat")
+    good = ("Dr. Bharat, aapke calls pichle 7 din mein 50% gir gaye hain (aapka usual 12 hai). "
+            "Aapka click-through rate 1.8% hai, jab peers ka average 3% hai. Kya main dekh loon ki kya badla hai?")
+    assert ungrounded_sentences(good, fs) == []
+    bad = ("Dr. Bharat, aapke calls pichle 7 din mein 50% gir gaye hain. Ye low engagement ka sanket hai, isliye profile ka "
+           "call-to-action update karna faydemand ho sakta hai. Kya aap is par discuss karna chahenge?")
+    assert len(ungrounded_sentences(bad, fs)) == 1
+    from app.writer import check
+    assert any("not based on any listed fact" in v for v in check({"body": bad, "cta": "open_ended", "facts_used": []}, fs, []))
+
+
+def test_template_composer_output_is_fully_grounded_for_every_trigger(dataset):
+    from app.verifier import ungrounded_sentences
+    checked = 0
+    for t in dataset["triggers"]:
+        m = next(x for x in dataset["merchants"] if x["merchant_id"] == t["merchant_id"])
+        c = next((x for x in dataset["customers"] if x["customer_id"] == t.get("customer_id")), None)
+        trig = normalize_trigger(t["id"], 1, t)
+        fs = build_factsheet(trig, m, dataset["categories"][m["category_slug"]], c, NOW)
+        if fs is None:
+            continue
+        body = compose_template(trig, fs, []).body
+        assert ungrounded_sentences(body, fs) == [], (t["id"], body)
+        checked += 1
+    assert checked >= 95

@@ -4,6 +4,7 @@ The LLM question path is added in Phase 4; until then questions get a determinis
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import datetime, timezone
@@ -77,12 +78,18 @@ def _render(kind: str, lang: str, customer: bool, d: str, used: list[str], ctx: 
     opts = _T[kind]["hi" if lang == "hi-en" else "en"] + (_T[kind]["en"] if lang == "hi-en" else [])
     ill = "we'll" if customer else "I'll"
     me, do, will = ("hum", "denge", "karenge") if customer else ("main", "doon", "karunga")
+    if lang == "hi-en" and d.startswith("the "):
+        d = d[4:]                                     # "the draft" reads oddly inside a Hindi sentence
     for tpl in opts:
         body = tpl.format(ill=ill, Ill=ill.capitalize(), i_will="we will" if customer else "I will", d=d, ctx=ctx, slots=slots,
                           me=me, do=do, will=will)
         if body not in used:
             return body
     return None
+
+
+async def _none(value=None):
+    return value
 
 
 def _speaks_hindi(message: str) -> bool:
@@ -119,24 +126,25 @@ async def handle_reply(store: Store, settings: Settings, req: dict) -> ReplyOut:
     except (TypeError, ValueError):
         turn = 1
 
-    conv = await store.get_json(f"conv:{conv_id}") or {}
     customer = bool(customer_id) and role == "customer"
     skey = ckey(customer_id) if customer else mkey(merchant_id, conv_id)
-    state = await load_state(store, skey)
+    # independent reads go out together (one network round-trip of latency instead of four)
+    conv_raw, state, merchant_row, sent_bodies = await asyncio.gather(
+        store.get_json(f"conv:{conv_id}"), load_state(store, skey),
+        store.get_context("merchant", merchant_id) if (merchant_id and not customer) else _none(),
+        store.list_range(f"sent:bodies:{merchant_id}") if merchant_id else _none([]))
+    conv = conv_raw or {}
 
     lang = conv.get("language")
-    if not lang and merchant_id and not customer:
-        m = await store.get_context("merchant", merchant_id)
-        langs = [str(x).lower() for x in ((m[1].get("identity") or {}).get("languages") or [])] if m else []
+    if not lang and merchant_row:
+        langs = [str(x).lower() for x in ((merchant_row[1].get("identity") or {}).get("languages") or [])]
         lang = "hi-en" if "hi" in langs else "en"
     lang = "hi-en" if _speaks_hindi(message) else (lang or "en")          # per-turn language switch
 
     pending = state.get("pending") or {}
     d = pending.get("deliverable") or "the draft"
     ctx = (pending.get("hook") or "").rstrip(".")
-    used = [t["body"] for t in conv.get("turns", []) if t.get("from") == "bot"]
-    if merchant_id:
-        used += await store.list_range(f"sent:bodies:{merchant_id}")
+    used = [t["body"] for t in conv.get("turns", []) if t.get("from") == "bot"] + list(sent_bodies or [])
 
     h = message_hash(message)
     cls = classify(message, seen_before=h in state["seen_hashes"])
@@ -231,5 +239,4 @@ async def _persist(store: Store, skey: str, state: dict, conv_id: str, conv: dic
     conv.setdefault("merchant_id", merchant_id)
     conv.setdefault("customer_id", customer_id)
     conv["turns"] = conv["turns"][-20:]
-    await save_state(store, skey, state)
-    await store.set_json(f"conv:{conv_id}", conv, CONV_TTL_S)
+    await asyncio.gather(save_state(store, skey, state), store.set_json(f"conv:{conv_id}", conv, CONV_TTL_S))

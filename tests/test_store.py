@@ -72,3 +72,19 @@ async def test_mget_contexts_preserves_order(any_store):
     res = await s.mget_contexts("trigger", ["t0", "t1"])
     assert res[0] is None and res[1] == (2, {"n": 1})
     await s.wipe()
+
+
+async def test_quota_reserve_n_is_atomic_and_matches_sequential_reserve(any_store):
+    s = any_store
+    await s.wipe()
+    import time
+    lim = {"rpm": 9, "tpm": 900, "rpd": 900, "tpd": 180000}
+    ts = time.time()
+    assert await s.quota_reserve_n("m", 300, 5, lim, ts) == 3            # TPM allows 900 // 300
+    assert await s.quota_reserve_n("m", 300, 5, lim, ts) == 0            # nothing left this minute
+    st = await s.quota_state("m", ts)
+    assert st["minute"] == {"req": 3, "tok": 900}
+    await s.quota_cool("m2", 30)
+    assert await s.quota_reserve_n("m2", 10, 3, lim, ts) == 0            # cooling model grants nothing
+    assert await s.quota_reserve_n("m3", 10, 0, lim, ts) == 0
+    await s.wipe()

@@ -38,13 +38,15 @@ def conversation_id(t: Trigger) -> str:
 async def _load_bundle(store: Store, triggers: list[Trigger]):
     mids = sorted({t.merchant_id for t in triggers if t.merchant_id})
     cids = sorted({t.customer_id for t in triggers if t.customer_id})
-    merchants = dict(zip(mids, await store.mget_contexts("merchant", mids)))
+    # everything that only needs the trigger list is fetched together (Redis latency is per round-trip, not per key)
+    m_rows, c_rows, m_states, c_states, sent_flags = await asyncio.gather(
+        store.mget_contexts("merchant", mids), store.mget_contexts("customer", cids),
+        load_states(store, [mkey(m, "") for m in mids]), load_states(store, [ckey(c) for c in cids]),
+        store.mget_json([event_key(t) for t in triggers]))
+    merchants, customers = dict(zip(mids, m_rows)), dict(zip(cids, c_rows))
+    mstates, cstates = dict(zip(mids, m_states)), dict(zip(cids, c_states))
     slugs = sorted({(m[1].get("category_slug") or "") for m in merchants.values() if m} - {""})
     categories = dict(zip(slugs, await store.mget_contexts("category", slugs)))
-    customers = dict(zip(cids, await store.mget_contexts("customer", cids)))
-    mstates = dict(zip(mids, await load_states(store, [mkey(m, "") for m in mids])))
-    cstates = dict(zip(cids, await load_states(store, [ckey(c) for c in cids])))
-    sent_flags = await store.mget_json([event_key(t) for t in triggers])
     return merchants, categories, customers, mstates, cstates, sent_flags
 
 
@@ -77,7 +79,8 @@ async def run_tick(store: Store, settings: Settings, body: dict) -> list[dict]:
         cu = customers.get(t.customer_id or "")
         mstate = mstates.get(t.merchant_id or "", {})
         ok, reason = check_policy(t, merchant, cat[1] if cat else None, cu[1] if cu else None, mstate,
-                                  cstates.get(t.customer_id or "", {}), now, already_sent=sent is not None)
+                                  cstates.get(t.customer_id or "", {}), now, already_sent=sent is not None,
+                                  consent_mode=settings.consent_mode)
         if not ok:
             log.info("no_op trigger=%s reason=%s", t.id, reason)
             continue
@@ -124,14 +127,9 @@ async def run_tick(store: Store, settings: Settings, body: dict) -> list[dict]:
 
         await asyncio.gather(*(run_group(g) for g in groups))
     elif router.enabled and time.monotonic() < deadline_at - 2:
-        for d in decisions:
-            if hits.get(d.trigger_id):
-                continue
-            t, fs = by_id[d.trigger_id]
-            est = estimate_tokens([{"content": "x" * 3600}], MAX_TOKENS)      # ~1k-token prompt + max completion
-            lease = await router.acquire(est)
-            if lease is None:
-                break                                                            # quota exhausted: the rest use templates
+        need = [d for d in decisions if not hits.get(d.trigger_id)]
+        est = estimate_tokens([{"content": "x" * 3600}], MAX_TOKENS)          # ~1k-token prompt + max completion
+        for d, lease in zip(need, await router.acquire_many(est, len(need))):   # score order; the rest use templates
             leases[d.trigger_id] = lease
     sem = asyncio.Semaphore(MAX_CONCURRENT_COMPOSES)
 
@@ -141,8 +139,8 @@ async def run_tick(store: Store, settings: Settings, body: dict) -> list[dict]:
 
     async def _build(d: Decision) -> Optional[tuple[Trigger, FactSheet, Composed, list[str]]]:
         t, fs = by_id[d.trigger_id]
-        recent = await _recent_bodies(store, d.merchant_id)
-        sent_fps = await store.smembers(f"sent:action:{d.merchant_id}")
+        recent, sent_fps = await asyncio.gather(_recent_bodies(store, d.merchant_id),
+                                                store.smembers(f"sent:action:{d.merchant_id}"))
         pb = get_playbook(t.kind)
         # dedup layers 2+3: try the planned hook, then the next-best hook facts, until the action is new
         # (layer 2) and the wording is not a near-duplicate of anything already sent (layer 3, in verify()).

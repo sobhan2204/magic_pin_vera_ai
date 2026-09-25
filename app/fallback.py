@@ -10,7 +10,8 @@ from .playbooks import Playbook
 
 N_VARIANTS = 3
 _LOWER_LEADS = {"your", "you", "you're", "it's", "a", "an", "time", "following", "thank", "we", "here's", "one",
-                "quick", "there", "the", "some"}
+                "quick", "there", "the", "some", "this", "in", "seasonal", "searches", "popular", "on", "recent", "demand",
+                "it", "its", "is", "are"}
 
 
 def variant_for(seed: str) -> int:
@@ -45,10 +46,14 @@ def compose_fallback(fs: FactSheet, pb: Playbook, seed: str, variant: Optional[i
     hook = strip_end(hook_fact.text if hook_fact else "Here's a quick update")
     used = [hook_fact.id] if hook_fact else []
 
+    statement = bool(hook_fact and hook_fact.source == "trigger.kind")
+    keys = pb.statement_support if (statement and pb.statement_support is not None) else pb.support_keys
     supports: list[str] = []
     if not minimal:
-        for key in (("t.prev_hook",) if fs.get("t.prev_hook") else ()) + pb.support_keys:
+        for key in (("t.prev_hook",) if fs.get("t.prev_hook") else ()) + keys:
             f = fs.get(key)
+            if f and hook_fact and f.text == hook_fact.text:
+                continue
             if f:
                 supports.append(strip_end(f.text))
                 used.append(f.id)
@@ -56,7 +61,11 @@ def compose_fallback(fs: FactSheet, pb: Playbook, seed: str, variant: Optional[i
                 break
 
     slot = _slot_ask(fs, pb)
-    ask = slot or (pb.ask_hi if fs.language == "hi-en" else pb.ask_en)
+    if statement and pb.stmt_ask_en:
+        default_ask = pb.stmt_ask_hi if fs.language == "hi-en" and pb.stmt_ask_hi else pb.stmt_ask_en
+    else:
+        default_ask = pb.ask_hi if fs.language == "hi-en" else pb.ask_en
+    ask = slot or default_ask
     cta = "multi_choice_slot" if slot else pb.cta_type
 
     def assemble(sup: list[str]) -> str:

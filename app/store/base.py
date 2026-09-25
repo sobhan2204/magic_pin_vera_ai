@@ -66,6 +66,10 @@ class Store(ABC):
         limits = {rpm, tpm, rpd, tpd}. Returns 'ok' | 'quota' | 'cooling'."""
 
     @abstractmethod
+    async def quota_reserve_n(self, model: str, est_tokens: int, n: int, limits: dict, ts: float) -> int:
+        """Atomically reserve up to n requests of est_tokens each; returns how many were granted (0 if cooling/out of quota)."""
+
+    @abstractmethod
     async def quota_adjust(self, model: str, delta_tokens: int, ts: float, delta_requests: int = 0) -> None: ...
 
     @abstractmethod

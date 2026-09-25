@@ -2,13 +2,55 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
+from typing import Optional
 
-PROMPT_VERSION = "p4"
+PROMPT_VERSION = "p9"
 # Keep in sync with vercel.json -> functions -> app/main.py -> maxDuration
 VERCEL_MAX_DURATION_S = 60
 MAX_CONTEXT_BYTES = 500 * 1024
+
+
+def parse_dotenv(text: str) -> dict[str, str]:
+    """Minimal .env parser: KEY=VALUE, optional `export`, single/double quotes, inline `# comments` on unquoted values."""
+    out: dict[str, str] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        key, _, val = line.partition("=")
+        key, val = key.strip(), val.strip()
+        if not key.replace("_", "").isalnum():
+            continue
+        if val[:1] in ("'", '"'):
+            end = val.find(val[0], 1)
+            val = val[1:end] if end != -1 else val[1:]
+        else:
+            m = re.search(r"\s#", val)
+            val = (val[: m.start()] if m else val).strip()
+        out[key] = val
+    return out
+
+
+def load_dotenv(path: Optional[Path] = None, override: bool = False) -> list[str]:
+    """Load .env into os.environ for LOCAL runs (real environment variables win unless override=True).
+    Skipped on Vercel (variables come from the dashboard) and when VERA_NO_DOTENV is set (tests)."""
+    if os.environ.get("VERCEL") or os.environ.get("VERA_NO_DOTENV"):
+        return []
+    p = path or Path(__file__).resolve().parent.parent / ".env"
+    if not p.is_file():
+        return []
+    loaded = []
+    for k, v in parse_dotenv(p.read_text(encoding="utf-8-sig")).items():
+        if override or k not in os.environ:
+            os.environ[k] = v
+            loaded.append(k)
+    return loaded
 
 
 def _s(name: str, default: str = "") -> str:
@@ -38,6 +80,8 @@ class Settings:
     alt_base_url: str
     alt_api_key: str
     alt_model: str
+    alt_limits: dict      # rpm/tpm/rpd/tpd for the alternate provider (defaults to the MODEL_* values)
+    alt_json_mode: str    # object | schema (strict json_schema; Cerebras and Groq support it)
     model_rpm: int
     model_tpm: int
     model_rpd: int
@@ -57,6 +101,7 @@ class Settings:
     submitted_at: str
     debug_token: str
 
+    consent_mode: str     # strict: scope must cover the trigger kind | lenient: any active consent is enough
     same_version_status: int  # 200 (idempotent no-op, testing brief) or 409 (api-call-examples 1.5)
 
     @property
@@ -83,6 +128,9 @@ class Settings:
             alt_base_url=_s("ALT_BASE_URL"),
             alt_api_key=_s("ALT_API_KEY"),
             alt_model=_s("ALT_MODEL"),
+            alt_limits={"rpm": _i("ALT_MODEL_RPM", _i("MODEL_RPM", 30)), "tpm": _i("ALT_MODEL_TPM", _i("MODEL_TPM", 8000)),
+                        "rpd": _i("ALT_MODEL_RPD", _i("MODEL_RPD", 1000)), "tpd": _i("ALT_MODEL_TPD", _i("MODEL_TPD", 200000))},
+            alt_json_mode="schema" if _s("ALT_JSON_MODE", "object").lower() == "schema" else "object",
             model_rpm=_i("MODEL_RPM", 30),
             model_tpm=_i("MODEL_TPM", 8000),
             model_rpd=_i("MODEL_RPD", 1000),
@@ -99,6 +147,7 @@ class Settings:
             bot_version=_s("BOT_VERSION", "1.0.0"),
             submitted_at=_s("SUBMITTED_AT"),
             debug_token=_s("DEBUG_TOKEN"),
+            consent_mode="lenient" if _s("CONSENT_MODE", "strict").lower() == "lenient" else "strict",
             same_version_status=409 if _i("SAME_VERSION_STATUS", 200) == 409 else 200,
         )
 

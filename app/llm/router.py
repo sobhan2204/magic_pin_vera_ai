@@ -28,6 +28,7 @@ class Target:
     model: str
     json_mode: str        # "schema" (Groq structured outputs) | "object"
     reasoning_effort: Optional[str]
+    limits: Optional[dict] = None   # provider-specific free-tier limits; None = the global MODEL_* limits
 
 
 @dataclass
@@ -44,7 +45,8 @@ def build_targets(s: Settings) -> list[Target]:
                 out.append(Target("groq", s.groq_base_url, s.groq_api_key, m, "schema",
                                   "low" if "gpt-oss" in m else None))
     if s.alt_base_url and s.alt_api_key and s.alt_model:
-        out.append(Target(s.alt_name or "alt", s.alt_base_url, s.alt_api_key, s.alt_model, "object", None))
+        out.append(Target(s.alt_name or "alt", s.alt_base_url, s.alt_api_key, s.alt_model, s.alt_json_mode,
+                          "low" if "gpt-oss" in s.alt_model else None, dict(s.alt_limits)))
     return out
 
 
@@ -61,8 +63,15 @@ class Router:
         self.store, self.s = store, settings
         self.chat = chat or llm_client.chat_completion
         self.targets = build_targets(settings)
-        self.limits = {"rpm": int(settings.model_rpm * SAFETY), "tpm": int(settings.model_tpm * SAFETY),
-                       "rpd": int(settings.model_rpd * SAFETY), "tpd": int(settings.model_tpd * SAFETY)}
+        self.limits = self._margin({"rpm": settings.model_rpm, "tpm": settings.model_tpm,
+                                    "rpd": settings.model_rpd, "tpd": settings.model_tpd})
+
+    @staticmethod
+    def _margin(raw: dict) -> dict:
+        return {k: int(v * SAFETY) for k, v in raw.items()}
+
+    def limits_for(self, t: "Target") -> dict:
+        return self._margin(t.limits) if t.limits else self.limits
 
     @property
     def enabled(self) -> bool:
@@ -74,7 +83,7 @@ class Router:
             if t.model in skip:
                 continue
             try:
-                res = await self.store.quota_reserve(t.model, est_tokens, self.limits, time.time())
+                res = await self.store.quota_reserve(t.model, est_tokens, self.limits_for(t), time.time())
             except Exception:
                 log.exception("quota reservation failed for %s", t.model)
                 continue
@@ -82,6 +91,21 @@ class Router:
                 return Lease(t, est_tokens)
             log.info("skip model=%s reason=%s", t.model, res)
         return None
+
+    async def acquire_many(self, est_tokens: int, n: int) -> list[Lease]:
+        """Reserve up to n leases with ONE atomic call per model (primary first, then the next model for the remainder).
+        Same result as n sequential acquire() calls, but O(models) round-trips instead of O(n)."""
+        leases: list[Lease] = []
+        for t in self.targets:
+            if len(leases) >= n:
+                break
+            try:
+                got = await self.store.quota_reserve_n(t.model, est_tokens, n - len(leases), self.limits_for(t), time.time())
+            except Exception:
+                log.exception("bulk quota reservation failed for %s", t.model)
+                continue
+            leases += [Lease(t, est_tokens) for _ in range(got)]
+        return leases
 
     async def release(self, lease: Lease) -> None:
         """Return an unused reservation."""
@@ -140,4 +164,5 @@ class Router:
                 out[t.model] = await self.store.quota_state(t.model, time.time())
             except Exception:
                 out[t.model] = {"error": "unavailable"}
-        return {"limits_with_margin": self.limits, "models": out, "llm_mode": self.s.llm_mode}
+        return {"limits_with_margin": self.limits, "per_model_limits": {t.model: self.limits_for(t) for t in self.targets},
+                "models": out, "llm_mode": self.s.llm_mode}

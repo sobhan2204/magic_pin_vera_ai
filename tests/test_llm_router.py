@@ -52,6 +52,14 @@ def test_target_chain_and_alt_provider(monkeypatch):
     reset_settings()
     ts = build_targets(get_settings())
     assert ts[-1].model == "alt-model" and ts[-1].json_mode == "object" and ts[-1].reasoning_effort is None
+    monkeypatch.setenv("ALT_MODEL", "gpt-oss-120b")
+    monkeypatch.setenv("ALT_JSON_MODE", "schema")
+    reset_settings()
+    alt = build_targets(get_settings())[-1]
+    assert alt.reasoning_effort == "low" and alt.json_mode == "schema"       # gpt-oss on any provider gets low effort
+    monkeypatch.setenv("ALT_MODEL", "alt-model")
+    monkeypatch.delenv("ALT_JSON_MODE")
+    reset_settings()
     monkeypatch.delenv("GROQ_API_KEY")
     reset_settings()
     assert [t.model for t in build_targets(get_settings())] == ["alt-model"]
@@ -287,7 +295,7 @@ async def test_deliberately_broken_key_never_errors(live, client, dataset):
 
 
 async def test_quota_exhaustion_skips_llm_without_calling(live, client, dataset, monkeypatch):
-    monkeypatch.setenv("MODEL_RPM", "2")                            # 1 request per model per minute after margin
+    monkeypatch.setenv("MODEL_RPD", "2")                            # 1 request per model per DAY after margin (no minute rollover flake)
     reset_settings()
     route = live.post(GROQ).mock(side_effect=lambda req: completion(msg(GOOD)))
     ids = []
@@ -321,3 +329,34 @@ async def test_mock_mode_makes_no_network_calls(client, dataset, monkeypatch):
         route = m.post(GROQ).mock(return_value=completion(msg(GOOD)))
         acts = await tick_one(client, dataset)
     assert len(acts) == 1 and route.call_count == 0
+
+
+async def test_acquire_many_equals_sequential_and_costs_one_call_per_model(fresh_env, monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    monkeypatch.setenv("MODEL_TPM", "1000")            # 900 with margin -> 3 x 300 per model
+    reset_settings()
+    r = router_for(fresh_env)
+    many = await r.acquire_many(300, 8)
+    assert [l.target.model for l in many] == ["openai/gpt-oss-120b"] * 3 + ["openai/gpt-oss-20b"] * 3
+    await fresh_env.wipe()
+    seq = []
+    while (l := await r.acquire(300)) is not None:
+        seq.append(l.target.model)
+    assert seq == [l.target.model for l in many]
+    assert await r.acquire_many(300, 4) == []
+
+
+async def test_alt_provider_has_its_own_limits(fresh_env, monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    monkeypatch.setenv("MODEL_TPM", "1000")
+    monkeypatch.setenv("ALT_BASE_URL", "https://alt.example/v1")
+    monkeypatch.setenv("ALT_API_KEY", "a")
+    monkeypatch.setenv("ALT_MODEL", "alt-model")
+    monkeypatch.setenv("ALT_MODEL_TPM", "60000")
+    reset_settings()
+    r = router_for(fresh_env)
+    alt = r.targets[-1]
+    assert r.limits_for(alt)["tpm"] == 54000 and r.limits_for(r.targets[0])["tpm"] == 900
+    leases = await r.acquire_many(300, 20)
+    models = [l.target.model for l in leases]
+    assert models.count("openai/gpt-oss-120b") == 3 and models.count("openai/gpt-oss-20b") == 3 and models.count("alt-model") == 14

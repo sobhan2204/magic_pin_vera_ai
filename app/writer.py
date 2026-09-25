@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Optional
 
 from .llm.router import Lease, Router, estimate_tokens
@@ -10,13 +11,23 @@ from .normalize import Trigger
 from .playbooks import Playbook
 from .prompts import (BATCH_IDS, BATCH_SCHEMA, MAX_TOKENS, MESSAGE_SCHEMA, build_batch_messages, build_repair_messages,
                       build_writer_messages, parse_batch, parse_output)
-from .verifier import hook_covered, verify
+from .verifier import hook_covered, ungrounded_sentences, verify
 
 log = logging.getLogger("vera.writer")
 
 
+_SPECULATION = re.compile(r"\b(risk\w*|ignor\w*|affect\w*|impact\w*|hurt\w*|damag\w*|harm\w*)\b|miss ho\b", re.I)
+
+
 def check(out: dict, fs: FactSheet, recent: list[str]) -> list[str]:
     v = verify(out, fs, recent)
+    for s in ungrounded_sentences(out.get("body", ""), fs):
+        v.append(f"sentence is not based on any listed fact: {s[:80]!r}. Restate a fact or remove it")
+    fact_text = " ".join(f.text for f in fs.facts).lower()
+    for m in _SPECULATION.finditer(out.get("body", "")):
+        if m.group(0).lower() in fact_text:
+            continue                                     # e.g. "affected batches" is the alert's own wording
+        v.append(f"speculative claim {m.group(0)!r}: state only what the facts say, no invented causes or consequences")
     if not v and not hook_covered(out["body"], fs):
         v.append("message does not lead with the hook fact")
     return v
