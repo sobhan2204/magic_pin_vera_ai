@@ -6,7 +6,9 @@ import json
 import time
 from typing import Any, Optional
 
-from .base import Store
+import time as _time
+
+from .base import Store, rl_stamps
 
 
 class MemoryStore(Store):
@@ -18,6 +20,8 @@ class MemoryStore(Store):
         self._kv: dict[str, tuple[Any, Optional[float]]] = {}   # key -> (value, expires_at)
         self._sets: dict[str, set[str]] = {}
         self._lists: dict[str, list[str]] = {}
+        self._quota: dict[str, dict[str, int]] = {}
+        self._cool: dict[str, float] = {}
 
     def _alive(self, key: str) -> bool:
         item = self._kv.get(key)
@@ -99,6 +103,39 @@ class MemoryStore(Store):
         async with self._lock:
             return self._alive(key) or key in self._sets or key in self._lists
 
+    async def quota_reserve(self, model, est_tokens, limits, ts):
+        async with self._lock:
+            if self._cool.get(model, 0) > _time.time():
+                return "cooling"
+            mstamp, dstamp = rl_stamps(ts)
+            m = self._quota.setdefault(f"{model}:m:{mstamp}", {"req": 0, "tok": 0})
+            d = self._quota.setdefault(f"{model}:d:{dstamp}", {"req": 0, "tok": 0})
+            if (m["req"] + 1 > limits["rpm"] or m["tok"] + est_tokens > limits["tpm"]
+                    or d["req"] + 1 > limits["rpd"] or d["tok"] + est_tokens > limits["tpd"]):
+                return "quota"
+            for c in (m, d):
+                c["req"] += 1
+                c["tok"] += est_tokens
+            return "ok"
+
+    async def quota_adjust(self, model, delta_tokens, ts, delta_requests=0):
+        async with self._lock:
+            for stamp, kind in zip(rl_stamps(ts), ("m", "d")):
+                c = self._quota.setdefault(f"{model}:{kind}:{stamp}", {"req": 0, "tok": 0})
+                c["tok"] = max(0, c["tok"] + delta_tokens)
+                c["req"] = max(0, c["req"] + delta_requests)
+
+    async def quota_cool(self, model, seconds):
+        async with self._lock:
+            self._cool[model] = _time.time() + seconds
+
+    async def quota_state(self, model, ts):
+        async with self._lock:
+            mstamp, dstamp = rl_stamps(ts)
+            return {"minute": dict(self._quota.get(f"{model}:m:{mstamp}", {"req": 0, "tok": 0})),
+                    "day": dict(self._quota.get(f"{model}:d:{dstamp}", {"req": 0, "tok": 0})),
+                    "cooling_s": max(0, round(self._cool.get(model, 0) - _time.time()))}
+
     async def wipe(self):
         async with self._lock:
             self._ctx.clear()
@@ -107,3 +144,5 @@ class MemoryStore(Store):
             self._kv.clear()
             self._sets.clear()
             self._lists.clear()
+            self._quota.clear()
+            self._cool.clear()

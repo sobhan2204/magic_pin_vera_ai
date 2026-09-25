@@ -101,7 +101,7 @@ async def tick(request: Request) -> JSONResponse:
     if not isinstance(data, dict):
         return JSONResponse({"actions": []})
     try:
-        actions = await asyncio.wait_for(run_tick(get_store(), settings, data), timeout=settings.tick_deadline_s)
+        actions = await asyncio.wait_for(run_tick(get_store(), settings, data), timeout=settings.tick_deadline_s + 4)
     except asyncio.TimeoutError:
         log.error("tick exceeded %.1fs deadline", settings.tick_deadline_s)
         actions = []
@@ -164,5 +164,6 @@ async def debug(token: str = "") -> JSONResponse:
         return JSONResponse({"detail": "Not Found"}, status_code=404)
     store = get_store()
     counts, boot = await store.health()
+    from .llm.router import Router
     return JSONResponse({"counts": counts, "boot_ts": boot, "last_actions": await store.list_range("dbg:actions"),
-                         "rate_limits": "available from Phase 4"})
+                         "rate_limits": await Router(store, s).state()})

@@ -76,7 +76,7 @@ def test_shape_checks(meera_fs):
     assert verify(out(""), meera_fs) == ["body is empty"]
     assert any("cta" in x for x in verify(out(GOOD, cta="shout"), meera_fs))
     assert any("unknown fact ids" in x for x in verify(out(GOOD, facts_used=["F99"]), meera_fs))
-    assert any("shorter" in x for x in verify(out("Dr. Meera, hi?"), meera_fs))
+    assert any("too short" in x for x in verify(out("Dr. Meera, hi?"), meera_fs))
 
 
 def test_duplicate_detected(meera_fs):

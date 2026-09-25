@@ -5,7 +5,7 @@ import os
 from dataclasses import dataclass
 from functools import lru_cache
 
-PROMPT_VERSION = "p1"
+PROMPT_VERSION = "p4"
 # Keep in sync with vercel.json -> functions -> app/main.py -> maxDuration
 VERCEL_MAX_DURATION_S = 60
 MAX_CONTEXT_BYTES = 500 * 1024

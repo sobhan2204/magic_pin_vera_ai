@@ -46,7 +46,7 @@ _ALL = [
         support_keys=("t.slots", "m.offer_price"), support_n=2,
         ask_en="Reply YES and we'll share the earliest slots.",
         ask_hi="Aap Reply YES kar dijiye, hum sabse pehle wale slots bhej denge.",
-        slot_ask_en="Reply 1 for {s1}, 2 for {s2}, or tell us a time that works.",
+        slot_ask_en="Reply 1 for {s1}, 2 for {s2}, or suggest a time that suits you.",
         slot_ask_hi="Aap chahein toh Reply 1 for {s1}, 2 for {s2}, ya apna time bata dijiye.",
         consent=("recall_reminders", "recall_alerts", "appointment_reminders"),
         deliverable="your booking", why_now="recall window is open"),

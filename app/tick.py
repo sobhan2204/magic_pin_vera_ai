@@ -7,7 +7,9 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
-from .compose import Composed, compose_message
+from .compose import ComposeEnv, Composed, compose_message, draft_cache_key
+from .llm.router import Router, estimate_tokens
+from .prompts import MAX_TOKENS
 from .config import Settings
 from .decision import decide
 from .dedup import action_fingerprint, alternate_hook_keys, hook_identity, promote_hook
@@ -21,6 +23,8 @@ from .resolver import build_factsheet
 from .store.base import Store
 
 log = logging.getLogger("vera.tick")
+FINALIZE_RESERVE_S = 3.0          # time kept back for Redis writes after composing
+MAX_CONCURRENT_COMPOSES = 8
 EVENT_TTL_S = 7 * 24 * 3600
 CONV_TTL_S = 3 * 24 * 3600
 
@@ -60,6 +64,9 @@ async def run_tick(store: Store, settings: Settings, body: dict) -> list[dict]:
         return []
 
     merchants, categories, customers, mstates, cstates, sent_flags = await _load_bundle(store, triggers)
+    deadline_at = started + settings.tick_deadline_s - FINALIZE_RESERVE_S
+    router = Router(store, settings)
+    tick_date = now.date().isoformat()
 
     candidates: list[tuple[Trigger, FactSheet, dict]] = []
     for t, sent in zip(triggers, sent_flags):
@@ -82,7 +89,38 @@ async def run_tick(store: Store, settings: Settings, body: dict) -> list[dict]:
     decisions = decide(candidates, now, settings.max_actions_per_tick)
     by_id = {t.id: (t, fs) for t, fs, _ in candidates}
 
+    def versions_for(t: Trigger) -> dict:
+        m = merchants.get(t.merchant_id or "")
+        cat = categories.get(((m[1] if m else {}) or {}).get("category_slug") or "")
+        cu = customers.get(t.customer_id or "")
+        return {"m": m[0] if m else None, "cat": cat[0] if cat else None, "cust": cu[0] if cu else "-"}
+
+    # Cache lookups (determinism) and quota leases are settled up front, in score order, so which drafts
+    # get the LLM never depends on task scheduling. The HTTP calls themselves then run concurrently.
+    keys = {d.trigger_id: draft_cache_key(by_id[d.trigger_id][0], versions_for(by_id[d.trigger_id][0]), tick_date)
+            for d in decisions}
+    try:
+        hits = dict(zip(keys, await store.mget_json(list(keys.values()))))
+    except Exception:
+        hits = {}
+    leases = {}
+    if router.enabled and time.monotonic() < deadline_at - 2:
+        for d in decisions:
+            if hits.get(d.trigger_id):
+                continue
+            t, fs = by_id[d.trigger_id]
+            est = estimate_tokens([{"content": "x" * 3600}], MAX_TOKENS)      # ~1k-token prompt + max completion
+            lease = await router.acquire(est)
+            if lease is None:
+                break                                                            # quota exhausted: the rest use templates
+            leases[d.trigger_id] = lease
+    sem = asyncio.Semaphore(MAX_CONCURRENT_COMPOSES)
+
     async def build(d: Decision) -> Optional[tuple[Trigger, FactSheet, Composed, list[str]]]:
+        async with sem:
+            return await _build(d)
+
+    async def _build(d: Decision) -> Optional[tuple[Trigger, FactSheet, Composed, list[str]]]:
         t, fs = by_id[d.trigger_id]
         recent = await _recent_bodies(store, d.merchant_id)
         sent_fps = await store.smembers(f"sent:action:{d.merchant_id}")
@@ -91,10 +129,16 @@ async def run_tick(store: Store, settings: Settings, body: dict) -> list[dict]:
         # (layer 2) and the wording is not a near-duplicate of anything already sent (layer 3, in verify()).
         options = [fs] + [o for o in (promote_hook(fs, k) for k in alternate_hook_keys(fs, pb.support_keys)) if o]
         skipped_dup = False
-        for opt in options:
+        vers = versions_for(t)
+        for n, opt in enumerate(options):
             hook = opt.get("hook")
             src, atoms = hook_identity(hook) if hook else ("", set())
-            c = compose_message(t, opt, recent)
+            first = n == 0
+            env = ComposeEnv(store=store, settings=settings, router=router, deadline_at=deadline_at,
+                             lease=leases.get(d.trigger_id) if first else None,
+                             cache_key=keys[d.trigger_id] if first else draft_cache_key(t, vers, tick_date, f"alt{n}"),
+                             allow_llm=first, cached=hits.get(d.trigger_id) if first else None, prefetched=first)
+            c = await compose_message(env, t, opt, recent)
             fp = action_fingerprint(d.merchant_id, d.customer_id, src, atoms, c.cta)
             if fp in sent_fps:
                 skipped_dup = True

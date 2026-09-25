@@ -56,8 +56,8 @@ def _sentences(body: str) -> list[str]:
     return [s for s in re.split(r"(?<=[.!?])\s+|\n+", b) if s.strip()]
 
 
-def allowed_tokens(fs: FactSheet) -> set[str]:
-    toks: set[str] = set()
+def allowed_tokens(fs: FactSheet, extra_text: str = "") -> set[str]:
+    toks: set[str] = {w.lower() for w in _WORD.findall(extra_text)}
     for f in fs.facts:
         toks |= {w.lower() for w in _WORD.findall(f.text)}
     for e in fs.allowed_entities:
@@ -84,7 +84,22 @@ def verify_rationale(rationale: str, body: str, fs: FactSheet, kind_words: str) 
     return v
 
 
-def verify(out: Any, fs: FactSheet, recent_bodies: Iterable[str] = ()) -> list[str]:
+def hook_covered(body: str, fs: FactSheet) -> bool:
+    """LLM messages must actually lead with the hook fact (keeps message, rationale and trigger aligned)."""
+    hook = fs.get("hook")
+    if not hook:
+        return True
+    nums = hook.atoms
+    if nums:
+        return len(nums & extract_numbers(body)) >= max(1, len(nums) // 2)
+    stop = {"your", "you", "the", "and", "for", "with", "that", "this", "our", "are", "was", "has", "have", "from", "time"}
+    hw = {w.lower() for w in _WORD.findall(hook.text) if len(w) > 3 and w.lower() not in stop}
+    bw = {w.lower() for w in _WORD.findall(body)}
+    return len(hw & bw) >= min(2, len(hw))
+
+
+def verify(out: Any, fs: FactSheet, recent_bodies: Iterable[str] = (), *, reply_mode: bool = False,
+           extra_text: str = "") -> list[str]:
     v: list[str] = []
     if not isinstance(out, dict):
         return ["output is not a JSON object"]
@@ -103,8 +118,8 @@ def verify(out: Any, fs: FactSheet, recent_bodies: Iterable[str] = ()) -> list[s
                 v.append(f"facts_used references unknown fact ids {unknown}")
 
     # 11. length
-    if len(body) < 60:
-        v.append("body is shorter than 60 characters")
+    if len(body) < (20 if reply_mode else 60):
+        v.append("body is too short")
     if len(body) > 600:
         v.append("body is longer than 600 characters")
 
@@ -116,11 +131,12 @@ def verify(out: Any, fs: FactSheet, recent_bodies: Iterable[str] = ()) -> list[s
     licensed: set[str] = set()
     for f in fs.facts:
         licensed |= f.atoms | extract_numbers(f.text)
+    licensed |= extract_numbers(extra_text)
     for n in sorted(extract_numbers(body, strip_allowed=True) - licensed):
         v.append(f"number {n!r} is not in the facts")
 
     # 3. entity grounding (capitalised words that are not sentence-initial)
-    ok = allowed_tokens(fs)
+    ok = allowed_tokens(fs, extra_text)
     for s in _sentences(body):
         toks = _WORD.findall(s)
         for i, w in enumerate(toks):
@@ -155,11 +171,11 @@ def verify(out: Any, fs: FactSheet, recent_bodies: Iterable[str] = ()) -> list[s
         v.append("more than one 'Reply ...' menu")
 
     # 7. salutation
-    if fs.salutation and fs.salutation not in body:
+    if fs.salutation and not reply_mode and fs.salutation not in body:
         v.append(f"salutation {fs.salutation!r} missing")
 
     # 8. language
-    if fs.language == "hi-en":
+    if fs.language == "hi-en" and not reply_mode:
         hits = {w for w in re.findall(r"[a-z]+", low) if w in _HINDI}
         if len(hits) < 2:
             v.append("hi-en merchant but body lacks Hindi-English code-mix")

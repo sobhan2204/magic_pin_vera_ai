@@ -1,6 +1,6 @@
 import copy
 
-from app.compose import compose_message, build_rationale
+from app.compose import compose_template as compose_message, build_rationale
 from app.dedup import (action_fingerprint, alternate_hook_keys, hook_identity, jaccard, normalize_body, promote_hook,
                        too_similar)
 from app.humanize import parse_dt

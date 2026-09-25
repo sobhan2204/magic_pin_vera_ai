@@ -7,6 +7,13 @@ from typing import Any, Optional
 SCOPES = ("category", "merchant", "customer", "trigger")
 
 
+def rl_stamps(ts: float) -> tuple[str, str]:
+    """(minute bucket, day bucket) in UTC for rate-limit counters."""
+    import time as _t
+    g = _t.gmtime(ts)
+    return _t.strftime("%Y%m%d%H%M", g), _t.strftime("%Y%m%d", g)
+
+
 class Store(ABC):
     # --- contexts -----------------------------------------------------------------
     @abstractmethod
@@ -51,6 +58,21 @@ class Store(ABC):
 
     @abstractmethod
     async def exists(self, key: str) -> bool: ...
+
+    # --- LLM quota accounting (atomic check-and-increment) ------------------------------------
+    @abstractmethod
+    async def quota_reserve(self, model: str, est_tokens: int, limits: dict, ts: float) -> str:
+        """Atomically reserve one request + est_tokens against RPM/TPM/RPD/TPD.
+        limits = {rpm, tpm, rpd, tpd}. Returns 'ok' | 'quota' | 'cooling'."""
+
+    @abstractmethod
+    async def quota_adjust(self, model: str, delta_tokens: int, ts: float, delta_requests: int = 0) -> None: ...
+
+    @abstractmethod
+    async def quota_cool(self, model: str, seconds: int) -> None: ...
+
+    @abstractmethod
+    async def quota_state(self, model: str, ts: float) -> dict: ...
 
     @abstractmethod
     async def wipe(self) -> None: ...

@@ -1,7 +1,7 @@
 """The template fallback must itself pass the verifier for every trigger in the expanded dataset."""
 import pytest
 
-from app.compose import compose_message
+from app.compose import compose_template as compose_message
 from app.fallback import compose_fallback, variant_for
 from app.humanize import parse_dt
 from app.normalize import normalize_trigger

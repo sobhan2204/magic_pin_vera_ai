@@ -14,6 +14,7 @@ from ..models import ReplyOut
 from ..store.base import Store
 from .classifier import classify, wait_seconds
 from .lint import SAFE_ACTION_BODY, lint_action_body
+from .llm_reply import try_llm_reply
 from .state import ckey, load_state, message_hash, mkey, save_state
 
 log = logging.getLogger("vera.reply")
@@ -202,10 +203,18 @@ async def handle_reply(store: Store, settings: Settings, req: dict) -> ReplyOut:
                         rationale="Out-of-scope ask politely declined; redirected to the pending item with one ask.")
                if body else ReplyOut(action="wait", wait_seconds=1800, rationale="Nothing new to add; waiting."))
     else:
-        body = _render("ask" if pending else "ask_none", lang, customer, d, used, ctx=ctx or "your profile update")
-        out = (ReplyOut(action="send", body=body, cta="binary_yes_stop" if pending else "open_ended",
-                        rationale="Answered from the pending item and pointed to the single next step.")
-               if body else ReplyOut(action="wait", wait_seconds=1800, rationale="Already replied with this; waiting."))
+        llm = None
+        if cls in ("question", "other") and settings.llm_mode == "live":
+            llm = await try_llm_reply(store, settings, conv=conv, merchant_id=merchant_id, customer_id=customer_id,
+                                      message=message, lang=lang, used=used, deliverable=d, customer=customer)
+        if llm:
+            out = ReplyOut(action="send", body=llm["body"], cta=llm.get("cta") or "open_ended",
+                           rationale="Answered the question from the known facts and pointed to the next step.")
+        else:
+            body = _render("ask" if pending else "ask_none", lang, customer, d, used, ctx=ctx or "your profile update")
+            out = (ReplyOut(action="send", body=body, cta="binary_yes_stop" if pending else "open_ended",
+                            rationale="Answered from the pending item and pointed to the single next step.")
+                   if body else ReplyOut(action="wait", wait_seconds=1800, rationale="Already replied with this; waiting."))
 
     await _persist(store, skey, state, conv_id, conv, message, role, out, merchant_id, customer_id)
     return out

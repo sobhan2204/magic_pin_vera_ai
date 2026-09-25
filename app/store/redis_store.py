@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from typing import Any, Optional
 
-from .base import Store
+from .base import Store, rl_stamps
 
 # KEYS[1]=ctx hash, KEYS[2]=counts hash ; ARGV = version, payload_json, scope, now_ts
 _PUT_CONTEXT = """
@@ -21,6 +21,27 @@ redis.call('HSET', KEYS[1], 'v', ARGV[1], 'p', ARGV[2])
 redis.call('HINCRBY', KEYS[2], ARGV[3], 1)
 redis.call('HSETNX', KEYS[2], 'boot_ts', ARGV[4])
 return {'new', ARGV[1]}
+"""
+
+
+# KEYS: minute hash, day hash, cooling key ; ARGV: est, rpm, tpm, rpd, tpd
+_QUOTA_RESERVE = """
+if redis.call('EXISTS', KEYS[3]) == 1 then return 2 end
+local est = tonumber(ARGV[1])
+local mr = tonumber(redis.call('HGET', KEYS[1], 'req') or '0')
+local mt = tonumber(redis.call('HGET', KEYS[1], 'tok') or '0')
+local dr = tonumber(redis.call('HGET', KEYS[2], 'req') or '0')
+local dt = tonumber(redis.call('HGET', KEYS[2], 'tok') or '0')
+if mr + 1 > tonumber(ARGV[2]) or mt + est > tonumber(ARGV[3]) or dr + 1 > tonumber(ARGV[4]) or dt + est > tonumber(ARGV[5]) then
+  return 0
+end
+redis.call('HINCRBY', KEYS[1], 'req', 1)
+redis.call('HINCRBY', KEYS[1], 'tok', est)
+redis.call('EXPIRE', KEYS[1], 180)
+redis.call('HINCRBY', KEYS[2], 'req', 1)
+redis.call('HINCRBY', KEYS[2], 'tok', est)
+redis.call('EXPIRE', KEYS[2], 172800)
+return 1
 """
 
 
@@ -109,6 +130,39 @@ class RedisStore(Store):
 
     async def exists(self, key):
         return bool(await self.r.exists(self._k(key)))
+
+    def _quota_keys(self, model: str, ts: float) -> tuple[str, str, str]:
+        m, d = rl_stamps(ts)
+        return self._k("rl", model, "m", m), self._k("rl", model, "d", d), self._k("rl", model, "cool")
+
+    async def quota_reserve(self, model, est_tokens, limits, ts):
+        mk, dk, ck = self._quota_keys(model, ts)
+        res = await self.r.eval(_QUOTA_RESERVE, keys=[mk, dk, ck],
+                                args=[str(est_tokens), str(limits["rpm"]), str(limits["tpm"]),
+                                      str(limits["rpd"]), str(limits["tpd"])])
+        return {1: "ok", 2: "cooling"}.get(int(res), "quota")
+
+    async def quota_adjust(self, model, delta_tokens, ts, delta_requests=0):
+        mk, dk, _ = self._quota_keys(model, ts)
+        pipe = self.r.pipeline()
+        for k in (mk, dk):
+            pipe.hincrby(k, "tok", int(delta_tokens))
+            if delta_requests:
+                pipe.hincrby(k, "req", int(delta_requests))
+        await pipe.exec()
+
+    async def quota_cool(self, model, seconds):
+        await self.r.set(self._k("rl", model, "cool"), "1", ex=int(seconds))
+
+    async def quota_state(self, model, ts):
+        mk, dk, ck = self._quota_keys(model, ts)
+        pipe = self.r.pipeline()
+        pipe.hgetall(mk)
+        pipe.hgetall(dk)
+        pipe.ttl(ck)
+        m, d, ttl = await pipe.exec()
+        conv = lambda h: {k: int(v) for k, v in _pairs_to_dict(h).items()} or {"req": 0, "tok": 0}
+        return {"minute": conv(m), "day": conv(d), "cooling_s": max(0, int(ttl or 0))}
 
     async def wipe(self):
         cursor = 0
