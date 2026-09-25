@@ -1,0 +1,9 @@
+[tool.vercel]
+entrypoint = "app.main:app"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = [".", "tests"]
+markers = ["live: real LLM calls (opt-in: pytest -m live)"]
+addopts = "-m 'not live'"
