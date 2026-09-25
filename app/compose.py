@@ -11,7 +11,7 @@ from .humanize import strip_end, words
 from .models import FactSheet
 from .normalize import Trigger
 from .playbooks import Playbook, get_playbook
-from .verifier import verify
+from .verifier import verify, verify_rationale
 
 
 @dataclass
@@ -45,11 +45,14 @@ def compose_message(t: Trigger, fs: FactSheet, recent_bodies: list[str]) -> Comp
         if not v:
             break
     assert best is not None
+    rationale = build_rationale(t, pb, fs, best["cta"])
+    if verify_rationale(rationale, best["body"], fs, words(t.kind)):
+        rationale = f"{words(t.kind)} trigger; objective: {pb.objective}; CTA: {best['cta']}."
     hook = fs.text("hook") or ""
     ask = best["body"].rsplit(". ", 1)[-1] if ". " in best["body"] else best["body"]
     return Composed(
         body=best["body"], cta=best["cta"], facts_used=best["facts_used"],
-        rationale=build_rationale(t, pb, fs, best["cta"]),
+        rationale=rationale,
         template_params=[fs.salutation, strip_end(hook), ask],
         via="fallback", violations=best_v or [],
     )

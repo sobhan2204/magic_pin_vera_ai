@@ -526,6 +526,18 @@ def _merchant_facts(c: Ctx) -> None:
         if cust_agg.get(k):
             c.add("m.lapsed", f"{fmt_num(cust_agg[k])} of your customers haven't visited in over {days} days", "merchant.customer_aggregate")
             break
+    win = perf.get("window_days", 30)
+    for key, name, peer_key in (("views", "views", "avg_views_30d"), ("calls", "calls", "avg_calls_30d")):
+        pv = c.peer.get(peer_key)
+        if isinstance(perf.get(key), (int, float)) and isinstance(pv, (int, float)):
+            c.add(f"m.{key}_peer", f"Your {win}-day {name} are {fmt_num(perf[key])} against a peer average of {fmt_num(pv)}",
+                  f"merchant.performance.{key}")
+    d7 = perf.get("delta_7d") or {}
+    for key, name in (("views_pct", "views"), ("calls_pct", "calls")):
+        v = d7.get(key)
+        if isinstance(v, (int, float)) and v != 0:
+            c.add("m.week", f"This week your {name} are {'up' if v > 0 else 'down'} {fmt_pct(v)}", "merchant.performance.delta_7d")
+            break
     sub = m.get("subscription") or {}
     if sub.get("status") == "active" and sub.get("days_remaining") is not None:
         c.add("m.subscription", f"Your {sub.get('plan', '')} plan has {sub['days_remaining']} days left".replace("  ", " "), "merchant.subscription")
@@ -546,6 +558,32 @@ def _merchant_facts(c: Ctx) -> None:
             break
 
 
+def _month_in_range(rng: str, month: int) -> bool:
+    names = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+    parts = [x.strip()[:3].lower() for x in str(rng).replace("–", "-").split("-") if x.strip()]
+    if not parts or any(x not in names for x in parts):
+        return False
+    lo, hi = names.index(parts[0]) + 1, names.index(parts[-1]) + 1
+    return lo <= month <= hi if lo <= hi else (month >= lo or month <= hi)
+
+
+def _category_facts(c: Ctx) -> None:
+    for beat in c.cat.get("seasonal_beats") or []:
+        if isinstance(beat, dict) and beat.get("note") and _month_in_range(beat.get("month_range", ""), c.now.month):
+            c.add("cat.season", f"Seasonal pattern for {beat['month_range']}: {strip_end(beat['note'])}", "category.seasonal_beats")
+            break
+    trends = [t for t in (c.cat.get("trend_signals") or []) if isinstance(t, dict) and isinstance(t.get("delta_yoy"), (int, float))]
+    if trends:
+        top = max(trends, key=lambda t: abs(t["delta_yoy"]))
+        c.add("cat.trend", f"Searches for “{top.get('query')}” are {'up' if top['delta_yoy'] > 0 else 'down'} "
+                           f"{fmt_pct(top['delta_yoy'])} year on year", "category.trend_signals")
+    if not c.active_offers():
+        ideas = [o.get("title") for o in (c.cat.get("offer_catalog") or [])
+                 if isinstance(o, dict) and o.get("type") == "service_at_price" and o.get("title")][:2]
+        if ideas:
+            c.add("cat.offers", f"Popular offers in your category include {join_and(ideas)}", "category.offer_catalog", tuple(ideas))
+
+
 def _customer_facts(c: Ctx) -> None:
     cu = c.cust or {}
     rel = cu.get("relationship") or {}
@@ -554,6 +592,16 @@ def _customer_facts(c: Ctx) -> None:
         c.add("c.months", f"It's been {n} months since your last visit", "customer.relationship.last_visit")
     if rel.get("visits_total"):
         c.add("c.visits", f"You've visited {rel['visits_total']} times so far", "customer.relationship.visits_total")
+    slots_pref = (cu.get("preferences") or {}).get("preferred_slots")
+    if slots_pref:
+        c.add("c.pref", f"You prefer {words(slots_pref)} slots", "customer.preferences.preferred_slots")
+    seen: list[str] = []
+    for svc in rel.get("services_received") or []:
+        w = words(svc)
+        if w and w != "..." and w not in seen:
+            seen.append(w)
+    if seen:
+        c.add("c.services", f"You've had {join_and(seen[:3])} with us before", "customer.relationship.services_received")
     stylist = (cu.get("preferences") or {}).get("preferred_stylist")
     if stylist:
         c.add("c.stylist", f"Your preferred stylist is {stylist}", "customer.preferences", (stylist,))
@@ -594,6 +642,7 @@ def build_factsheet(trigger: Trigger, merchant: dict, category: dict, customer: 
     if not c.has("hook"):
         _generic_hook(c)
     _merchant_facts(c)
+    _category_facts(c)
     if customer:
         _customer_facts(c)
 

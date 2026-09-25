@@ -66,6 +66,24 @@ def allowed_tokens(fs: FactSheet) -> set[str]:
     return toks
 
 
+def verify_rationale(rationale: str, body: str, fs: FactSheet, kind_words: str) -> list[str]:
+    """The rationale must describe what the body actually does: name the trigger/hook, invent no numbers."""
+    v: list[str] = []
+    low = rationale.lower()
+    hook = (fs.text("hook") or "").lower()
+    if kind_words.lower() not in low and (not hook or hook[:25] not in low):
+        v.append("rationale does not mention the trigger kind or the hook")
+    licensed = extract_numbers(body)
+    for f in fs.facts:
+        licensed |= f.atoms
+    stripped = re.sub(r"urgency \d/5", " ", rationale)
+    for n in sorted(extract_numbers(stripped) - licensed):
+        v.append(f"rationale mentions number {n!r} that is not in the message or facts")
+    if _URL.search(rationale):
+        v.append("rationale contains a URL")
+    return v
+
+
 def verify(out: Any, fs: FactSheet, recent_bodies: Iterable[str] = ()) -> list[str]:
     v: list[str] = []
     if not isinstance(out, dict):

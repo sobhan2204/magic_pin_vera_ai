@@ -47,7 +47,7 @@ def compose_fallback(fs: FactSheet, pb: Playbook, seed: str, variant: Optional[i
 
     supports: list[str] = []
     if not minimal:
-        for key in pb.support_keys:
+        for key in (("t.prev_hook",) if fs.get("t.prev_hook") else ()) + pb.support_keys:
             f = fs.get(key)
             if f:
                 supports.append(strip_end(f.text))

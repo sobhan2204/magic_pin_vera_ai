@@ -10,7 +10,7 @@ from typing import Optional
 from .compose import Composed, compose_message
 from .config import Settings
 from .decision import decide
-from .dedup import action_fingerprint
+from .dedup import action_fingerprint, alternate_hook_keys, hook_identity, promote_hook
 from .humanize import parse_dt
 from .models import Action, Decision, FactSheet
 from .normalize import Trigger, normalize_trigger
@@ -85,17 +85,26 @@ async def run_tick(store: Store, settings: Settings, body: dict) -> list[dict]:
     async def build(d: Decision) -> Optional[tuple[Trigger, FactSheet, Composed, list[str]]]:
         t, fs = by_id[d.trigger_id]
         recent = await _recent_bodies(store, d.merchant_id)
-        c = compose_message(t, fs, recent)
-        if c.violations:
-            log.warning("dropping trigger=%s violations=%s", t.id, c.violations)
-            return None
-        # dedup layer 2: action fingerprint
-        hook = fs.get("hook")
-        fp = action_fingerprint(d.merchant_id, d.customer_id, "hook", hook.atoms if hook else set(), c.cta)
-        if fp in await store.smembers(f"sent:action:{d.merchant_id}"):
-            log.info("no_op trigger=%s reason=duplicate_action", t.id)
-            return None
-        return t, fs, c, [fp]
+        sent_fps = await store.smembers(f"sent:action:{d.merchant_id}")
+        pb = get_playbook(t.kind)
+        # dedup layers 2+3: try the planned hook, then the next-best hook facts, until the action is new
+        # (layer 2) and the wording is not a near-duplicate of anything already sent (layer 3, in verify()).
+        options = [fs] + [o for o in (promote_hook(fs, k) for k in alternate_hook_keys(fs, pb.support_keys)) if o]
+        skipped_dup = False
+        for opt in options:
+            hook = opt.get("hook")
+            src, atoms = hook_identity(hook) if hook else ("", set())
+            c = compose_message(t, opt, recent)
+            fp = action_fingerprint(d.merchant_id, d.customer_id, src, atoms, c.cta)
+            if fp in sent_fps:
+                skipped_dup = True
+                continue
+            if c.violations:
+                log.info("trigger=%s option rejected: %s", t.id, c.violations)
+                continue
+            return t, opt, c, [fp]
+        log.info("no_op trigger=%s reason=%s", t.id, "duplicate_action" if skipped_dup else "no_valid_message")
+        return None
 
     built = [b for b in await asyncio.gather(*(build(d) for d in decisions)) if b]
 
