@@ -1,0 +1,10 @@
+tests
+scripts
+dataset
+examples
+expanded
+.git
+.pytest_cache
+*.md
+judge_simulator.py
+requirements-dev.txt

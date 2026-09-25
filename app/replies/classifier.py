@@ -56,7 +56,7 @@ def classify(message: str, seen_before: bool = False) -> str:
         return "opt_out"
     if _hit(HOSTILE, t):
         return "hostile"
-    if _hit(AUTO_REPLY, t) or (seen_before and len(t) >= 20):
+    if _hit(AUTO_REPLY, t):
         return "auto_reply"
     if _hit(COMMITMENT, t) and len(t.split()) <= 12:
         return "commitment"
@@ -64,6 +64,10 @@ def classify(message: str, seen_before: bool = False) -> str:
         return "later"
     if _hit(OFF_TOPIC, t):
         return "off_topic"
+    # A long neutral message repeated verbatim is a canned auto-reply. Messages that carry a clear intent
+    # (yes / later / off-topic ...) are excluded above: people legitimately repeat those.
+    if seen_before and len(t) >= 20:
+        return "auto_reply"
     if "?" in t or QUESTION_START.match(t):
         return "question"
     return "other"

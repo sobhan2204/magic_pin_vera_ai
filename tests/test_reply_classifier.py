@@ -69,6 +69,12 @@ def test_repeated_long_message_is_auto_reply_even_without_known_phrase():
     assert classify("ok", seen_before=True) != "auto_reply"          # short replies repeat legitimately
 
 
+def test_repeated_intent_messages_are_not_mistaken_for_auto_replies():
+    for msg, cls in (("busy right now, call later", "later"), ("Yes please send the details", "commitment"),
+                     ("Can you help me with a home loan?", "off_topic")):
+        assert classify(msg, seen_before=True) == cls
+
+
 def test_wait_lengths():
     assert wait_seconds("not now") == 3600
     assert wait_seconds("kal baat karte hain") == 86400
