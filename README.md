@@ -41,8 +41,10 @@ get the LLM, the rest get verified templates, and we never trigger a 429 on purp
 * **Closed-world grounding over creativity:** the writer may not add colour that is not in the data (no invented studies, prices,
   competitors). This costs some flair and protects against the fabrication penalty.
 * **Restraint over spam:** we skip sends that would be a second nudge to an unanswered merchant, or that are near-duplicates.
-* **Optional batch composition** (`LLM_BATCH_SIZE`, default off): several decisions per LLM call when the token limit is the
-  bottleneck; failed items fall back to the verified template.
+  `expires_at` only ranks triggers, it never suppresses one the judge lists as active. Customer sends need an active opt-in (lenient) and the
+  rationale states which consent was used.
+* **Batch composition** (`LLM_BATCH_SIZE=3`, default): several decisions per LLM call because the free-tier token limit is the
+  bottleneck; quota goes to the best-scored decisions first, failed items fall back to the verified template.
 * **Determinism:** temperature 0 + seed + a per-(trigger, context versions, day, prompt version) draft cache.
 
 ## What extra context would help most

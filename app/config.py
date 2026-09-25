@@ -102,7 +102,6 @@ class Settings:
     debug_token: str
 
     consent_mode: str     # strict: scope must cover the trigger kind | lenient: any active consent is enough
-    same_version_status: int  # 200 (idempotent no-op, testing brief) or 409 (api-call-examples 1.5)
 
     @property
     def model_label(self) -> str:
@@ -137,7 +136,7 @@ class Settings:
             model_tpd=_i("MODEL_TPD", 200000),
             llm_call_timeout_s=_i("LLM_CALL_TIMEOUT_S", 12),
             llm_seed=_i("LLM_SEED", 7),
-            llm_batch_size=max(1, min(_i("LLM_BATCH_SIZE", 1), 4)),
+            llm_batch_size=max(1, min(_i("LLM_BATCH_SIZE", 3), 4)),
             tick_deadline_s=float(min(_i("TICK_DEADLINE_S", 20), VERCEL_MAX_DURATION_S - 5)),
             reply_deadline_s=float(min(_i("REPLY_DEADLINE_S", 15), VERCEL_MAX_DURATION_S - 5)),
             max_actions_per_tick=_i("MAX_ACTIONS_PER_TICK", 20),
@@ -147,8 +146,7 @@ class Settings:
             bot_version=_s("BOT_VERSION", "1.0.0"),
             submitted_at=_s("SUBMITTED_AT"),
             debug_token=_s("DEBUG_TOKEN"),
-            consent_mode="lenient" if _s("CONSENT_MODE", "strict").lower() == "lenient" else "strict",
-            same_version_status=409 if _i("SAME_VERSION_STATUS", 200) == 409 else 200,
+            consent_mode="strict" if _s("CONSENT_MODE", "lenient").lower() == "strict" else "lenient",
         )
 
 

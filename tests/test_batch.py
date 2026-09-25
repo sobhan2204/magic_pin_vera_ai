@@ -130,7 +130,46 @@ async def test_batches_are_split_by_size(live, client, dataset, monkeypatch):
     assert route.call_count >= 2                    # ceil(3/2) groups (500s also trigger failover attempts)
 
 
-async def test_default_is_one_call_per_message(live, client, dataset):
+def test_shipped_default_is_batches_of_three(monkeypatch):
+    monkeypatch.delenv("LLM_BATCH_SIZE")
+    reset_settings()
+    from app.config import get_settings
+    assert get_settings().llm_batch_size == 3
+    monkeypatch.setenv("LLM_BATCH_SIZE", "9")
+    reset_settings()
+    assert get_settings().llm_batch_size == 4                      # capped
+
+
+async def test_batch_size_one_is_one_call_per_message(live, client, dataset):
     route = live.post(GROQ).mock(return_value=completion("{}"))       # unusable output -> 1-2 attempts each, templates used
     acts = await run_tick(client, dataset)
     assert len(acts) == 3 and route.call_count >= 3
+
+
+async def test_llm_quota_goes_to_the_highest_scored_decisions_first(live, client, dataset, monkeypatch):
+    """Quota allows only 2 batch calls (1 per model per day). With 6 decisions in batches of 2, the two best-scored
+    batches get the LLM and the two lowest-scored decisions never reach it (they use the verified template)."""
+    from conftest import push
+    monkeypatch.setenv("LLM_BATCH_SIZE", "2")
+    monkeypatch.setenv("MODEL_RPD", "2")
+    reset_settings()
+    for slug, cat in dataset["categories"].items():
+        await push(client, "category", slug, cat)
+    picks = [m for m in dataset["merchants"] if m["category_slug"] == "salons"][:6]
+    urgencies = [1, 5, 2, 4, 1, 3]
+    ids = []
+    for m, u in zip(picks, urgencies):
+        await push(client, "merchant", m["merchant_id"], m)
+        tid = f"trg_prio_{m['merchant_id']}"
+        ids.append((tid, m, u))
+        await push(client, "trigger", tid, {"kind": "perf_dip", "merchant_id": m["merchant_id"], "payload": {"placeholder": True},
+                                            "urgency": u, "suppression_key": f"prio:{tid}", "expires_at": "2026-12-01T00:00:00Z"})
+    route = live.post(GROQ).mock(return_value=httpx.Response(500))
+    r = await client.post("/v1/tick", json={"now": NOW_ISO, "available_triggers": [i[0] for i in ids]})
+    assert len(r.json()["actions"]) == 6                                        # everything still sends (templates)
+    prompts = " ".join(json.loads(c.request.content)["messages"][1]["content"] for c in route.calls)
+    by_urgency = sorted(ids, key=lambda x: -x[2])
+    top4 = {m["identity"]["owner_first_name"] for _, m, _ in by_urgency[:4]}
+    bottom2 = {m["identity"]["owner_first_name"] for _, m, _ in by_urgency[4:]}
+    assert all(f'"{name}"' in prompts for name in top4)                         # salutation lines of the best four were sent
+    assert not any(f'"{name}"' in prompts for name in bottom2)                  # the two lowest never reached the LLM

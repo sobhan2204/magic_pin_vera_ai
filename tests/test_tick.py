@@ -40,9 +40,35 @@ async def test_concurrent_ticks_send_once(client, dataset):
     assert sum(len(r) for r in results) == 1
 
 
-async def test_expired_trigger_is_not_sent(client, dataset):
-    t, _ = await push_seed(client, dataset, "trg_001_research_digest_dentists")
-    assert await tick(client, [t["id"]], now="2026-06-01T00:00:00Z") == []
+async def test_tick_months_after_expires_at_still_sends(client, dataset):
+    """available_triggers is the judge's statement that a trigger is active: expires_at only affects ranking."""
+    t, _ = await push_seed(client, dataset, "trg_001_research_digest_dentists")          # expires 2026-05-03
+    acts = await tick(client, [t["id"]], now="2026-09-25T09:00:00Z")                      # ~5 months later
+    assert len(acts) == 1 and acts[0]["trigger_id"] == t["id"] and acts[0]["body"].strip()
+
+
+async def test_every_seed_trigger_still_sends_long_after_expiry(client, dataset):
+    for m in dataset["merchants"]:
+        pass
+    ids = []
+    for slug, cat in dataset["categories"].items():
+        await push(client, "category", slug, cat)
+    seen_merchants = set()
+    for t in dataset["trigger_seeds"]:
+        if t["merchant_id"] in seen_merchants:
+            continue
+        seen_merchants.add(t["merchant_id"])
+        m = next(x for x in dataset["merchants"] if x["merchant_id"] == t["merchant_id"])
+        await push(client, "merchant", m["merchant_id"], m)
+        if t.get("customer_id"):
+            await push(client, "customer", t["customer_id"], next(c for c in dataset["customers"] if c["customer_id"] == t["customer_id"]))
+        await push(client, "trigger", t["id"], t)
+        ids.append(t["id"])
+    acts = await tick(client, ids, now="2027-03-01T09:00:00Z")                            # ~10 months after most expiries
+    assert {a["trigger_id"] for a in acts} == set(ids)
+    for a in acts:                                                                        # no negative / silly relative-time facts
+        assert "-" not in " ".join(w for w in a["body"].split() if w.rstrip("dayswkmonth").lstrip("-").isdigit() and w.startswith("-"))
+        assert "days ago days" not in a["body"] and "-1 day" not in a["body"]
 
 
 async def test_missing_contexts_yield_no_action(client, dataset):

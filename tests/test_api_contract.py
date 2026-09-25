@@ -24,7 +24,7 @@ async def test_context_versioning_200_noop_409(client):
     r = await push(client, "merchant", "m1", {"v": 1}, version=1)
     assert r.status_code == 200 and r.json()["accepted"] is True and r.json()["ack_id"] == "ack_m1_v1"
     same = await push(client, "merchant", "m1", {"v": "changed"}, version=1)
-    assert same.status_code == 200 and same.json()["accepted"] is True          # idempotent no-op
+    assert same.status_code == 200 and same.json()["accepted"] is True and same.json()["duplicate"] is True    # idempotent no-op
     up = await push(client, "merchant", "m1", {"v": 2}, version=2)
     assert up.status_code == 200
     stale = await push(client, "merchant", "m1", {"v": 0}, version=1)
@@ -34,13 +34,16 @@ async def test_context_versioning_200_noop_409(client):
     assert (await get_store().get_context("merchant", "m1")) == (2, {"v": 2})   # same-version push changed nothing
 
 
-async def test_same_version_can_be_configured_to_409(client, monkeypatch):
-    from app.config import reset_settings
-    monkeypatch.setenv("SAME_VERSION_STATUS", "409")
-    reset_settings()
-    await push(client, "merchant", "m1", {"v": 1})
-    r = await push(client, "merchant", "m1", {"v": 1})
-    assert r.status_code == 409 and r.json()["current_version"] == 1
+async def test_same_version_repush_is_200_with_duplicate_flag_and_lower_is_409(client):
+    first = await push(client, "merchant", "m1", {"v": 1}, version=3)
+    assert first.status_code == 200 and "duplicate" not in first.json()
+    again = await push(client, "merchant", "m1", {"v": "changed"}, version=3)
+    assert again.status_code == 200
+    assert again.json()["accepted"] is True and again.json()["duplicate"] is True and again.json()["ack_id"] == "ack_m1_v3"
+    lower = await push(client, "merchant", "m1", {"v": 0}, version=2)
+    assert lower.status_code == 409 and lower.json() == {"accepted": False, "reason": "stale_version", "current_version": 3}
+    higher = await push(client, "merchant", "m1", {"v": 4}, version=4)
+    assert higher.status_code == 200 and "duplicate" not in higher.json()
 
 
 async def test_context_400s(client):

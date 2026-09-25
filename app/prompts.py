@@ -63,14 +63,9 @@ def select_facts(fs: FactSheet, pb: Playbook) -> list:
             texts.add(f.text)
             chosen.append(f)
 
-    hook = fs.get("hook")
-    take(hook)
-    statement = bool(hook and hook.source == "trigger.kind")
-    keys = pb.statement_support if (statement and pb.statement_support is not None) else pb.support_keys
-    for k in (*_FACT_ORDER_EXTRA, *keys):
+    take(fs.get("hook"))
+    for k in (*_FACT_ORDER_EXTRA, "t.kind", *pb.support_keys):
         take(fs.get(k))
-    if statement and pb.statement_support == ():
-        return chosen                                   # kind-level statement only: give the writer nothing unrelated to add
     for f in fs.facts:
         take(f)
     return chosen
@@ -93,7 +88,7 @@ def ask_example(fs: FactSheet, pb: Playbook) -> str:
     from .fallback import _slot_ask
     slot = _slot_ask(fs, pb)
     hook = fs.get("hook")
-    if not slot and hook and hook.source == "trigger.kind" and pb.stmt_ask_en:
+    if not slot and (fs.get("t.kind") or (hook and hook.source == "trigger.kind")) and pb.stmt_ask_en:
         return pb.stmt_ask_hi if fs.language == "hi-en" and pb.stmt_ask_hi else pb.stmt_ask_en
     return slot or (pb.ask_hi if fs.language == "hi-en" else pb.ask_en)
 

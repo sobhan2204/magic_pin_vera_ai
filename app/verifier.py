@@ -83,7 +83,7 @@ def _sentences(body: str) -> list[str]:
 def allowed_tokens(fs: FactSheet, extra_text: str = "") -> set[str]:
     toks: set[str] = {w.lower() for w in _WORD.findall(extra_text)}
     for f in fs.facts:
-        toks |= {w.lower() for w in _WORD.findall(f.text)}
+        toks |= {w.lower() for w in _WORD.findall(f.text + " " + (f.hi or ""))}
     for e in fs.allowed_entities:
         toks |= {w.lower() for w in _WORD.findall(e)}
     toks |= {w.lower() for w in _WORD.findall(fs.salutation + " " + fs.merchant_name)}
@@ -126,8 +126,8 @@ def ungrounded_sentences(body: str, fs: FactSheet) -> list[str]:
     vocab: set[str] = set()
     licensed: set[str] = set()
     for f in fs.facts:
-        vocab |= {w.lower() for w in _WORD.findall(f.text) if len(w) > 3}
-        licensed |= f.atoms | extract_numbers(f.text)
+        vocab |= {w.lower() for w in _WORD.findall(f.text + " " + (f.hi or "")) if len(w) > 3}
+        licensed |= f.atoms | extract_numbers(f.text) | extract_numbers(f.hi or "")
     vocab -= own | _FILLER
     bad = []
     for s in sents[:-1]:

@@ -10,6 +10,7 @@ Use a judge model that is NOT one of the bot's models so the bot's quota is unto
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -45,11 +46,11 @@ class HttpxJudge(js.LLMProvider):
 
     def complete(self, prompt: str, system: str = None) -> str:
         msgs = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
-        for attempt in range(3):
+        for attempt in range(6):
             r = httpx.post(f"{self.base_url}/chat/completions", timeout=90, headers={"Authorization": f"Bearer {self.api_key}"},
                            json={"model": self.model, "messages": msgs, "temperature": 0.2, "max_tokens": 2500})
             if r.status_code == 429:
-                time.sleep(5 * (attempt + 1))
+                time.sleep(8 * (attempt + 1))
                 continue
             r.raise_for_status()
             return r.json()["choices"][0]["message"]["content"] or ""
@@ -145,6 +146,10 @@ def main() -> int:
         for k, _, s, _ in ok:
             by[k].append(s.total)
         print("  lowest kinds:", sorted(((sum(v) / len(v), k) for k, v in by.items()))[:6])
+        print("SUMMARY", json.dumps({"n": n, "actions": len(actions), "triggers": len(sample), "spec": avg(lambda s: s.specificity),
+                                     "cat": avg(lambda s: s.category_fit), "merch": avg(lambda s: s.merchant_fit),
+                                     "why": avg(lambda s: s.decision_quality), "eng": avg(lambda s: s.engagement_compulsion),
+                                     "total": avg(lambda s: s.total)}))
     return 0
 
 

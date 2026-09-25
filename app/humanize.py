@@ -95,6 +95,21 @@ def plural(n: Any, word: str) -> str:
     return f"{n} {word}" if str(n) in ("1", "1.0") else f"{n} {word}s"
 
 
+_MONTHS_FULL = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+
+def beautify_dates(text: str) -> str:
+    """'effective 2026-12-15' -> 'effective 15 Dec 2026' (data titles carry raw ISO dates)."""
+    def one(m: "re.Match") -> str:
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        return f"{d} {_MONTHS_FULL[mo - 1]} {y}" if 1 <= mo <= 12 and 1 <= d <= 31 else m.group(0)
+    return re.sub(r"\b(\d{4})-(\d{2})-(\d{2})\b", one, text or "")
+
+
+def cap_days(text: str) -> str:
+    return re.sub(r"\b(mon|tues|wednes|thurs|fri|satur|sun)day\b", lambda m: m.group(0).capitalize(), text)
+
+
 def join_and(items: list[str]) -> str:
     items = [i for i in items if i]
     if len(items) <= 1:

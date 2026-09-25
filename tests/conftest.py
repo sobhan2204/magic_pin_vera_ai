@@ -1,6 +1,9 @@
 import os
 
 os.environ["VERA_NO_DOTENV"] = "1"          # tests must never pick up real keys from .env
+os.environ["LLM_BATCH_SIZE"] = "1"             # tests that need batching set it explicitly (the shipped default is 3)
+os.environ["LLM_BATCH_SIZE"] = "1"             # tests that need batching set it explicitly (the shipped default is 3)
+os.environ["LLM_BATCH_SIZE"] = "1"             # tests that need batching set it explicitly (the shipped default is 3)
 os.environ["STORE_BACKEND"] = "memory"
 os.environ["LLM_MODE"] = "mock"
 os.environ.pop("DEBUG_TOKEN", None)

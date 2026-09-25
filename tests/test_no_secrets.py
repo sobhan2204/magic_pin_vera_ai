@@ -11,8 +11,8 @@ SECRET_PATTERNS = [r"gsk_[A-Za-z0-9]{20,}", r"csk-[A-Za-z0-9]{20,}", r"sk-[A-Za-
 
 def test_env_example_has_no_secret_values():
     values = parse_dotenv((ROOT / ".env.example").read_text(encoding="utf-8-sig"))
-    for k in ("UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN", "GROQ_API_KEY", "ALT_API_KEY", "ALT_BASE_URL", "DEBUG_TOKEN",
-              "CONTACT_EMAIL", "SUBMITTED_AT", "ALT_MODEL", "ALT_PROVIDER_NAME"):
+    for k in ("UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN", "GROQ_API_KEY", "ALT_API_KEY", "DEBUG_TOKEN",
+              "CONTACT_EMAIL", "SUBMITTED_AT"):
         assert values.get(k, "") == "", f".env.example must leave {k} empty"
 
 

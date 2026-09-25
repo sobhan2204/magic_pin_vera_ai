@@ -80,26 +80,26 @@ def test_derived_facts_are_computed_in_code(dataset):
     fs = fs_for(dataset, "trg_012_milestone_mylari")
     assert "just 5 away from 150" in fs.text("hook")
     fs = fs_for(dataset, "trg_004_perf_dip_bharat")
-    assert fs.text("hook").startswith("Your calls are down 50% over the last 7 days")
-    assert fs.text("m.ctr") == "Your click-through rate is 1.8% against a peer average of 3%"
+    assert fs.text("hook") == "Your Google profile shows calls down 50% over the last 7 days (your usual is 12)"
+    assert fs.text("m.ctr") == "Your Google profile shows a click-through rate of 1.8% against a peer average of 3%"
     fs = fs_for(dataset, "trg_003_recall_due_priya", now=parse_dt("2026-09-25T09:00:00Z"))
     assert "It's been 4 months since your last visit" in fs.text("hook")
     fs = fs_for(dataset, "trg_007_bridal_followup_kavya", now=parse_dt("2026-04-26T10:00:00Z"))
-    assert "195 days to go" in fs.text("hook") and "30-day skin prep program" in fs.text("hook")
+    assert "196 days to go" in fs.text("hook") and "30-day skin prep program" in fs.text("hook")
 
 
 def test_relative_facts_follow_the_tick_clock(dataset):
     a = fs_for(dataset, "trg_006_festival_diwali", now=parse_dt("2026-04-26T10:00:00Z")).text("hook")
     b = fs_for(dataset, "trg_006_festival_diwali", now=parse_dt("2026-10-27T10:00:00Z")).text("hook")
-    assert "187 days away" in a and "3 days away" in b                  # payload's stale days_until is ignored
+    assert "188 days away" in a and "188 days away" in b                # the payload's own days_until is preferred over recomputing
 
 
 def test_peer_comparison_and_merchant_facts(dataset):
     fs = fs_for(dataset, "trg_001_research_digest_dentists")
-    assert fs.text("m.views_peer") == "Your 30-day views are 2,410 against a peer average of 1,820"
-    assert fs.text("m.calls_peer") == "Your 30-day calls are 18 against a peer average of 12"
-    assert fs.text("m.cohort") == "You have 124 high-risk adult patients on your roster"
-    assert fs.text("m.week") == "This week your views are up 18%"
+    assert fs.text("m.views_peer") == "Your Google profile shows 2,410 views over 30 days, against a peer average of 1,820"
+    assert fs.text("m.calls_peer") == "Your Google profile shows 18 calls over 30 days, against a peer average of 12"
+    assert fs.text("m.cohort") == "Your patient records show 124 high-risk adult patients"
+    assert fs.text("m.week") == "Your Google profile shows views up 18% this week"
     assert fs.text("m.history").startswith("When we last spoke you said")
     assert fs.active_offers == ["Dental Cleaning @ ₹299"]               # expired offer excluded
     assert "Deep Cleaning" not in " ".join(f.text for f in fs.facts)
@@ -110,7 +110,7 @@ def test_seasonal_beat_and_trend_use_the_tick_month(dataset):
     assert "Apr-Jun" in fs.text("cat.season") and "pediatric appointments" in fs.text("cat.season")
     fs = fs_for(dataset, "trg_001_research_digest_dentists", now=parse_dt("2026-12-05T00:00:00Z"))
     assert "Nov-Feb" in fs.text("cat.season")                           # wrap-around range
-    assert fs.text("cat.trend") == "Searches for “clear aligners delhi” are up 62% year on year"
+    assert fs.text("cat.trend") == "Search trends show “clear aligners delhi” searches up 62% year on year"
 
 
 def test_offer_ideas_only_when_no_active_offer(dataset):
@@ -122,7 +122,7 @@ def test_offer_ideas_only_when_no_active_offer(dataset):
 def test_customer_facts(dataset):
     fs = fs_for(dataset, "trg_003_recall_due_priya")
     assert fs.text("c.pref") == "You prefer weekday evening slots"
-    assert fs.text("c.services") == "You've had cleaning and whitening with us before"
+    assert fs.text("c.services") == "Our records show you've had cleaning and whitening with us before"
     assert fs.text("m.offer_price") == "Dental Cleaning @ ₹299 is on right now"
 
 

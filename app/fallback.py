@@ -11,7 +11,19 @@ from .playbooks import Playbook
 N_VARIANTS = 3
 _LOWER_LEADS = {"your", "you", "you're", "it's", "a", "an", "time", "following", "thank", "we", "here's", "one",
                 "quick", "there", "the", "some", "this", "in", "seasonal", "searches", "popular", "on", "recent", "demand",
-                "it", "its", "is", "are"}
+                "it", "its", "is", "are", "aapke", "aapki", "aapka", "aapko", "humari", "hamare", "pichle", "is", "aap", "saath"}
+
+
+def _txt(fs: FactSheet, f) -> str:
+    """The fact in the recipient's language: Hindi-English wording when we have it and the recipient is hi-en."""
+    return f.hi if (fs.language == "hi-en" and f.hi) else f.text
+
+
+def _no_repeat_source(support: str, hook: str) -> str:
+    for prefix in ("Your Google profile shows ", "Aapke Google profile par "):
+        if support.startswith(prefix) and hook.startswith(prefix):
+            return ("It also shows " if prefix.startswith("Your") else "Saath hi ") + support[len(prefix):]
+    return support
 
 
 def variant_for(seed: str) -> int:
@@ -43,19 +55,18 @@ def compose_fallback(fs: FactSheet, pb: Playbook, seed: str, variant: Optional[i
                      minimal: bool = False) -> dict:
     v = variant_for(seed) if variant is None else variant % N_VARIANTS
     hook_fact = fs.get("hook")
-    hook = strip_end(hook_fact.text if hook_fact else "Here's a quick update")
+    hook = strip_end(_txt(fs, hook_fact) if hook_fact else "Here's a quick update")
     used = [hook_fact.id] if hook_fact else []
 
-    statement = bool(hook_fact and hook_fact.source == "trigger.kind")
-    keys = pb.statement_support if (statement and pb.statement_support is not None) else pb.support_keys
+    statement = bool(fs.get("t.kind")) or bool(hook_fact and hook_fact.source == "trigger.kind")
     supports: list[str] = []
     if not minimal:
-        for key in (("t.prev_hook",) if fs.get("t.prev_hook") else ()) + keys:
+        for key in ("t.prev_hook", "t.kind") + pb.support_keys:
             f = fs.get(key)
             if f and hook_fact and f.text == hook_fact.text:
                 continue
             if f:
-                supports.append(strip_end(f.text))
+                supports.append(_no_repeat_source(strip_end(_txt(fs, f)), hook))
                 used.append(f.id)
             if len(supports) >= pb.support_n:
                 break

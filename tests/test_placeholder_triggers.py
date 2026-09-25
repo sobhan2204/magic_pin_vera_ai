@@ -54,24 +54,25 @@ def _t(kind, merchant_id, **extra):
 def test_perf_dip_uses_real_negative_data_and_never_claims_a_number_it_lacks(dataset):
     mid = "m_002_bharat_dentist_mumbai"                       # calls -50%, views -22% in delta_7d
     _, fs = sheet(dataset, _t("perf_dip", mid))
-    assert fs.text("hook") == "This week your views are down 22%" or "down" in fs.text("hook")
+    assert fs.text("hook") == "Your Google profile shows calls down 50% over the last 7 days"
     def flat(m):
         m["performance"]["delta_7d"] = {"views_pct": 0.05, "calls_pct": 0.02}
         m["performance"]["views"], m["performance"]["calls"] = 5000, 500       # also above peers
     _, fs2 = sheet(dataset, _t("perf_dip", mid), mutate=flat)
-    assert fs2.text("hook") == "Your profile numbers have dipped recently"     # honest kind-level statement, no invented number
+    assert fs2.text("hook").startswith("Your Google profile shows 500 calls")        # strongest merchant fact (peer gap)
+    assert fs2.text("t.kind") == "Your profile numbers have dipped recently"         # the trigger is the one supporting sentence
 
 
 def test_renewal_and_winback_use_the_subscription_facts(dataset):
     _, fs = sheet(dataset, _t("renewal_due", "m_002_bharat_dentist_mumbai"))
-    assert fs.text("hook") == "Your Pro plan has 12 days left"
+    assert fs.text("hook") == "Your magicpin subscription shows your Pro plan has 12 days left"
     _, fs = sheet(dataset, _t("winback_eligible", "m_004_glamour_salon_pune"))
-    assert fs.text("hook") == "Your plan expired 38 days ago"
+    assert fs.text("hook") == "Your magicpin subscription shows your plan expired 38 days ago"
 
 
 def test_dormant_uses_conversation_history_or_signal(dataset):
     _, fs = sheet(dataset, _t("dormant_with_vera", "m_004_glamour_salon_pune"))       # last message 2026-03-19 -> 37 days
-    assert fs.text("hook") == "It's been 37 days since we last spoke"
+    assert fs.text("hook") == "Our chat history shows it's been 37 days since we last spoke"
     _, fs = sheet(dataset, _t("dormant_with_vera", "m_002_bharat_dentist_mumbai"), now=parse_dt("2026-04-26T10:00:00Z"))
     assert "since we last spoke" in fs.text("hook")
 
@@ -97,7 +98,8 @@ def test_gbp_uses_the_merchants_own_verified_flag(dataset):
 
 def test_seasonal_kinds_use_the_categorys_seasonal_note(dataset):
     _, fs = sheet(dataset, _t("festival_upcoming", "m_007_powerhouse_gym_bangalore"))
-    assert "Seasonal pattern for Apr-Jun" in fs.text("hook")
+    assert "seasonal pattern for Apr-Jun" in fs.text("cat.season")                    # available as a fact ...
+    assert fs.text("hook") != fs.text("cat.season") and fs.get("t.kind")               # ... but the lead is the strongest merchant fact
 
 
 # ---- consent mode ---------------------------------------------------------------------------------------------------
@@ -107,7 +109,8 @@ def test_lenient_consent_accepts_any_active_scope_strict_does_not():
     promo = {"consent": {"opted_in_at": "2026-01-01", "scope": ["promotional_offers"]}}
     t = nt("t", 1, {"kind": "recall_due", "scope": "customer", "merchant_id": "m", "customer_id": "c", "expires_at": "2026-12-01T00:00:00Z"})
     args = (t, {"category_slug": "x"}, {"slug": "x"}, promo, {}, {}, NOW, False)
-    assert check_policy(*args)[1] == "consent_scope_mismatch"
+    assert check_policy(*args, consent_mode="strict")[1] == "consent_scope_mismatch"
+    assert check_policy(*args) == (True, "ok")                                   # lenient is the default now
     assert check_policy(*args, consent_mode="lenient") == (True, "ok")
     none = {"consent": {"opted_in_at": None, "scope": []}}
     assert check_policy(t, {"category_slug": "x"}, {"slug": "x"}, none, {}, {}, NOW, False, consent_mode="lenient")[1] == "no_consent"
@@ -116,8 +119,7 @@ def test_lenient_consent_accepts_any_active_scope_strict_does_not():
 async def test_consent_mode_env_reaches_the_tick(client, dataset, monkeypatch):
     from app.config import reset_settings
     from conftest import NOW_ISO, push
-    monkeypatch.setenv("CONSENT_MODE", "lenient")
-    reset_settings()
+    reset_settings()                                                            # default consent mode: lenient
     await push(client, "category", "dentists", dataset["categories"]["dentists"])
     m = next(x for x in dataset["merchants"] if x["merchant_id"] == "m_001_drmeera_dentist_delhi")
     await push(client, "merchant", m["merchant_id"], m)
@@ -153,11 +155,11 @@ def test_kind_level_statements_do_not_drag_in_unrelated_numbers(dataset):
     m = next(x for x in dataset["merchants"] if x["category_slug"] == "salons" and not x.get("review_themes"))
     t = _t("review_theme_emerged", m["merchant_id"])
     trig, fs = sheet(dataset, t)
-    assert fs.text("hook") == "Recent reviews are showing a recurring theme"
+    assert fs.get("t.kind").text == "Recent reviews are showing a recurring theme"     # the trigger is the supporting fact
+    assert fs.get("hook").source.startswith("merchant.")                            # ... and the lead is the strongest merchant fact
     body = compose_template(trig, fs, []).body
-    assert not any(ch.isdigit() for ch in body)                                     # nothing numeric to be misread
-    assert "themes" in body
-    assert [f.key for f in select_facts(fs, get_playbook(trig.kind))] == ["hook"]
+    assert "theme" in body and "themes" in body                           # kind statement + honest 'pull the themes' ask
+    assert [f.key for f in select_facts(fs, get_playbook(trig.kind))][:2] == ["hook", "t.kind"]
 
 
 def test_speculation_lint_allows_words_the_facts_use(dataset):

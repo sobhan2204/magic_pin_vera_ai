@@ -91,9 +91,10 @@ async def push_context(request: Request) -> JSONResponse:
                             status_code=400)
     if status == "stale":
         return JSONResponse({"accepted": False, "reason": "stale_version", "current_version": current}, status_code=409)
-    if status == "same" and get_settings().same_version_status == 409:
-        return JSONResponse({"accepted": False, "reason": "stale_version", "current_version": current}, status_code=409)
-    return JSONResponse({"accepted": True, "ack_id": f"ack_{cid}_v{version}", "stored_at": _now_iso()})
+    body = {"accepted": True, "ack_id": f"ack_{cid}_v{version}", "stored_at": _now_iso()}
+    if status == "same":
+        body["duplicate"] = True                          # idempotent no-op: same (context_id, version) pushed again
+    return JSONResponse(body)
 
 
 @app.post("/v1/tick")

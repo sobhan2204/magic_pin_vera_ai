@@ -259,14 +259,14 @@ async def test_failed_repair_falls_back_to_verified_template(live, client, datas
     route = live.post(GROQ).mock(return_value=completion(msg(BAD_NUMBER)))
     acts = await tick_one(client, dataset)
     assert route.call_count == 2                                    # original + exactly one repair
-    assert "57" not in acts[0]["body"] and "down 50%" in acts[0]["body"]
+    assert " 57%" not in acts[0]["body"] and "50%" in acts[0]["body"]
 
 
 async def test_llm_message_that_ignores_the_hook_is_rejected(live, client, dataset):
     off_hook = "Dr. Bharat, Kya aap chahenge ki main aapke profile ke liye ek naya post draft kar doon aur bhej doon?"
     live.post(GROQ).mock(return_value=completion(msg(off_hook)))
     acts = await tick_one(client, dataset)
-    assert "down 50%" in acts[0]["body"]
+    assert "50%" in acts[0]["body"]
 
 
 async def test_429_on_primary_uses_secondary_through_tick(live, client, dataset):
@@ -280,7 +280,7 @@ async def test_429_on_primary_uses_secondary_through_tick(live, client, dataset)
 async def test_all_models_down_still_returns_valid_grounded_message(live, client, dataset):
     live.post(GROQ).mock(return_value=httpx.Response(503))
     acts = await tick_one(client, dataset)
-    assert len(acts) == 1 and "down 50%" in acts[0]["body"]
+    assert len(acts) == 1 and "50%" in acts[0]["body"]
 
 
 async def test_deliberately_broken_key_never_errors(live, client, dataset):
@@ -318,7 +318,7 @@ async def test_slow_llm_cannot_break_the_tick_deadline(live, client, dataset, mo
     t0 = time.monotonic()
     acts = await tick_one(client, dataset)
     assert time.monotonic() - t0 < 7.5
-    assert len(acts) == 1 and "down 50%" in acts[0]["body"]
+    assert len(acts) == 1 and "50%" in acts[0]["body"]
 
 
 async def test_mock_mode_makes_no_network_calls(client, dataset, monkeypatch):

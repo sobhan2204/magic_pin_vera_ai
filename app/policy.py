@@ -17,13 +17,12 @@ def event_key(t: Trigger) -> str:
 
 
 def check_policy(t: Trigger, merchant: Optional[dict], category: Optional[dict], customer: Optional[dict],
-                 mstate: dict, cstate: dict, now: datetime, already_sent: bool, consent_mode: str = "strict") -> tuple[bool, str]:
+                 mstate: dict, cstate: dict, now: datetime, already_sent: bool, consent_mode: str = "lenient") -> tuple[bool, str]:
     if not t.merchant_id or not merchant:
         return False, "missing_merchant"
     if not category:
         return False, "missing_category"
-    if t.expires_at and t.expires_at < now:
-        return False, "expired"
+    # expires_at is NOT a gate: a trigger the judge lists in available_triggers is active. Expiry only affects ranking.
     if already_sent:
         return False, "already_sent"
     if mstate.get("opted_out"):

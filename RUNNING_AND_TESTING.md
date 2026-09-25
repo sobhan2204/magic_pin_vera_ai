@@ -184,16 +184,17 @@ total /50; `FINAL SUMMARY` averages them. Replay scenarios print PASS/WARN/FAIL 
 * The simulator's *own* judging LLM makes calls too. If it uses the same Groq gpt-oss models it eats the bot's per-minute/per-day
   quota. Give it a different model (any small Groq model listed in your console) or a different provider key.
 * `full_evaluation` scores ~100 triggers and burns the daily token budget. Run it at most once, never in a loop.
-* The simulator ticks with the **real clock** (`datetime.utcnow()`), while the seed triggers expire between Apr and Dec 2026.
-  Once real time passes an `expires_at` the bot correctly refuses to send, so `phase2_short` can show "0 actions". That is the
-  restraint logic working, not a bug; use `scripts/full_run.py` (simulated clock) to see messages.
+* The simulator ticks with the **real clock** (`datetime.utcnow()`), long after the seed triggers' `expires_at`. The bot does **not**
+  treat `expires_at` as a gate (a trigger listed in `available_triggers` is active; expiry only lowers its rank), so it still sends.
+  Relative-time facts ("N days to go") prefer the payload's own numbers and are omitted when negative or implausible.
 * The simulator's replay scenarios reuse the first merchant; a hostile "stop" run opts that merchant out for 7 days. Run
   `POST /v1/teardown` between scenario runs if you want a clean slate.
 
 ## 9. Deploy to Vercel
 
 1. **Upstash**: console.upstash.com -> Create Database (Redis, Regional, free) -> copy the **REST URL** and **REST token** (not the `redis://` URL).
-2. **Groq**: console.groq.com -> API Keys -> create one. Note the limits shown for `openai/gpt-oss-120b` / `-20b` (defaults in `.env.example` match the free plan: 30 RPM, 8,000 TPM, 1,000 RPD, 200,000 TPD).
+2. **Upstash region: create the database in `us-east-1` (N. Virginia).** `vercel.json` pins the function to `iad1` (Washington DC), which is co-located with `us-east-1`; a database anywhere else costs 100-300 ms per Redis command and a tick makes ~10 sequential round-trips.
+2b. **Groq**: console.groq.com -> API Keys -> create one. Note the limits shown for `openai/gpt-oss-120b` / `-20b` (defaults in `.env.example` match the free plan: 30 RPM, 8,000 TPM, 1,000 RPD, 200,000 TPD).
 3. **Vercel CLI** (from the project root):
 
 ```powershell
@@ -221,6 +222,8 @@ Everything else has a sensible default (see `.env.example`). Do not commit real 
    If `/v1/*` returns 404, see Troubleshooting.
 6. **Logs**: `vercel logs https://<project>.vercel.app` (or Dashboard -> project -> Logs). Every no-op decision, dropped draft and LLM failover is logged.
 7. **Redeploy**: change code, `vercel --prod` again. **Do not redeploy while the judge is running** (a cold start mid-test is avoidable risk).
+
+Region: `vercel.json` sets `"regions": ["iad1"]`. Keep the Upstash database in `us-east-1`; a mismatch is the most likely cause of slow ticks.
 
 Layout used (verified against current Vercel docs): a FastAPI `app` in `app/main.py`, pinned with `[tool.vercel] entrypoint = "app.main:app"`
 in `pyproject.toml`; `vercel.json` sets `maxDuration: 60` for that function (Hobby allows up to 300 s with fluid compute); internal
@@ -260,7 +263,7 @@ Mirrors `challenge-testing-brief.md` §12, plus ours:
 | 404 on `/v1/*` | Entrypoint not detected. Confirm `pyproject.toml` has `[tool.vercel] entrypoint = "app.main:app"` and `requirements.txt` lists `fastapi`; redeploy; check the build log for "Python" |
 | 500 / 504 | Should not happen: every route catches errors. Look at `vercel logs`. A 504 means the function exceeded `maxDuration`; keep `TICK_DEADLINE_S <= 55` |
 | Hindi shows as `â‚¹` / `Ã` | A client sending or reading non-UTF-8 (PowerShell `Invoke-RestMethod` with a string body, Windows Python without `-X utf8`). The bot itself is UTF-8 end to end |
-| `No actions` from a tick | Read the log: `no_op trigger=... reason=expired / awaiting_reply / merchant_opted_out / already_sent / consent_scope_mismatch / missing_join` |
+| `No actions` from a tick | Read the log: `no_op trigger=... reason=awaiting_reply / merchant_opted_out / customer_opted_out / no_consent / already_sent / missing_join` (`expires_at` is never a reason: it only affects ranking) |
 | Local test hangs on port 8080 | An old uvicorn is still running (see the stop command in section 3) |
 
 ## 13. Quota budgeting and command usage
@@ -327,11 +330,27 @@ What the live run showed, and what changed because of it:
   found by scoring: the LLM had written "Your Pro plan has 16 days left" to a customer.
 * **LLM drafts are additionally rejected** for invented causes/advice (speculation words, and any sentence before the ask that shares
   no content word with a fact) and for units that do not match the facts ("95 customers" is not "95%").
-* **`CONSENT_MODE`**: the generated dataset gives every generated customer only `["promotional_offers"]`, so `strict` (default; scope
-  must cover the trigger kind) sends nothing for ~25% of generated customer triggers (recall_due, customer_lapsed_soft,
-  appointment_tomorrow, chronic_refill_due, trial_followup). `lenient` sends to any customer with an active consent.
+* **`CONSENT_MODE`**: the generated dataset gives every generated customer only `["promotional_offers"]`, so `strict` (scope must cover the trigger kind) would send nothing for ~25% of generated customer triggers. The default is now `lenient` (see "Decisions applied" below).
 * **`judge_simulator.py` bug on Groq**: its `urllib` user agent is rejected by Groq with HTTP 403. `scripts/run_simulator.py` and
   `scripts/score_sample.py` work around it without editing the file.
 * **Scores with the official judge prompt** (a non-gpt-oss judge model, noisy +-9 per message): messages built from real trigger payloads
   ~35-43/50; messages for placeholder-payload triggers ~20-30/50. That judge only sees a subset of the merchant/customer fields, so
   it also flags true facts from other fields as "invented".
+
+
+### Decisions applied on 2026-09-26
+
+* **Consent** defaults to `lenient`: any customer with an active opt-in scope (or an `opted_in_at`) is contacted; only missing consent or an
+  opt-out blocks a send. The rationale of every customer-facing message says what consent it relied on (for example
+  "Consent: customer opted in (promotional_offers); this reminder type is not named in that scope, sent under the lenient consent policy").
+  `CONSENT_MODE=strict` restores scope-must-cover-the-kind.
+* **Same-version re-push** returns `200 {"accepted": true, "duplicate": true, ...}` and changes nothing; only a lower version is `409`.
+* **Expiry is ranking only.** A trigger in `available_triggers` is never dropped because of `expires_at`; already-expired triggers
+  rank below live ones. Relative-time facts prefer payload fields (`days_until`, `days_to_wedding` ...), fall back to the tick clock, and are
+  omitted when negative or implausible (> 730 days, > 60 months).
+* **LLM chain**: gpt-oss-120b -> gpt-oss-20b (Groq) -> gpt-oss-120b (Cerebras, `ALT_*`). **Batch mode is on** (`LLM_BATCH_SIZE=3`): decisions
+  are grouped in score order and quota leases are taken sequentially, so the best-scored groups always get the LLM first; when quota runs out the
+  remaining decisions use the verified templates.
+* **Templates** follow the case-study shape: a specific hook with numbers, one supporting fact, one CTA in the last sentence, and a Hindi-English
+  variant of the body (not just the ask). Merchant facts name their source ("Your Google profile shows...", "Your customer records show...").
+  When the payload is thin or a placeholder, the lead is the strongest merchant fact (peer gap, lapsed count, review theme, active offer).

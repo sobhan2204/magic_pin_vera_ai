@@ -16,7 +16,9 @@ def score_trigger(t: Trigger, now: datetime, mstate: dict) -> float:
     score = t.urgency * 10.0
     if t.expires_at:
         left = t.expires_at - now
-        if left <= timedelta(hours=48):
+        if left < timedelta(0):
+            score -= 20                                  # already past its stated expiry: still sendable, but rank it last
+        elif left <= timedelta(hours=48):
             score += 10
         elif left <= timedelta(days=7):
             score += 5

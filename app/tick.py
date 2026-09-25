@@ -115,17 +115,19 @@ async def run_tick(store: Store, settings: Settings, body: dict) -> list[dict]:
         size = settings.llm_batch_size
         groups = [todo[i:i + size] for i in range(0, len(todo), size)]
 
-        async def run_group(group: list[Decision]) -> None:
-            items = []
-            for d in group:
-                t, fs = by_id[d.trigger_id]
-                items.append((t, fs, get_playbook(t.kind), await _recent_bodies(store, d.merchant_id)))
+        recents = dict(zip((d.trigger_id for d in todo),
+                           await asyncio.gather(*(_recent_bodies(store, d.merchant_id) for d in todo))))
+        planned = []                                     # (group items, lease) - quota goes to the best-scored groups first
+        for group in groups:
+            items = [(by_id[d.trigger_id][0], by_id[d.trigger_id][1], get_playbook(by_id[d.trigger_id][0].kind),
+                      recents[d.trigger_id]) for d in group]
             est = estimate_tokens([{"content": "x" * (1500 + 2200 * len(items))}], MAX_TOKENS * len(items))
-            lease = await router.acquire(est)
-            if lease is not None:
-                batch_out.update(await write_batch(router, items, deadline_at, lease))
-
-        await asyncio.gather(*(run_group(g) for g in groups))
+            lease = await router.acquire(est)            # sequential on purpose: deterministic priority by score
+            if lease is None:
+                break                                    # quota exhausted: every lower-ranked group uses the template
+            planned.append((items, lease))
+        for out in await asyncio.gather(*(write_batch(router, items, deadline_at, lease) for items, lease in planned)):
+            batch_out.update(out)
     elif router.enabled and time.monotonic() < deadline_at - 2:
         need = [d for d in decisions if not hits.get(d.trigger_id)]
         est = estimate_tokens([{"content": "x" * 3600}], MAX_TOKENS)          # ~1k-token prompt + max completion

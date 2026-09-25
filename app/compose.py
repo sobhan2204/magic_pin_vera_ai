@@ -58,8 +58,11 @@ def draft_cache_key(t: Trigger, versions: dict, tick_date: str, hook_key: str = 
 def build_rationale(t: Trigger, pb: Playbook, fs: FactSheet, cta: str) -> str:
     hook = fs.text("hook") or ""
     why = pb.why_now or "new information arrived"
-    return (f"{words(t.kind)} trigger ({why}; urgency {t.urgency}/5); leading with “{strip_end(hook)}”; "
+    text = (f"{words(t.kind)} trigger ({why}; urgency {t.urgency}/5); leading with “{strip_end(hook)}”; "
             f"objective: {pb.objective}; CTA: {cta}.")
+    if fs.consent_note:
+        text += f" Consent: {fs.consent_note}."
+    return text
 
 
 def _finish(t: Trigger, pb: Playbook, fs: FactSheet, out: dict, via: str, violations: list[str]) -> Composed:

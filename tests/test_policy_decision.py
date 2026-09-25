@@ -26,8 +26,8 @@ def test_basic_allow_and_missing_joins():
     assert allow(normalize_trigger("t", 1, {"kind": "perf_dip"}))[1] == "missing_merchant"
 
 
-def test_expiry_and_already_sent():
-    assert allow(trig(expires_at="2026-04-01T00:00:00Z"))[1] == "expired"
+def test_expiry_never_blocks_and_already_sent_does():
+    assert allow(trig(expires_at="2026-04-01T00:00:00Z")) == (True, "ok")           # expired triggers are ranked last, not dropped
     assert allow(trig(), sent=True)[1] == "already_sent"
 
 
@@ -43,7 +43,8 @@ def test_customer_consent_rules():
     assert allow(t, cust=None)[1] == "missing_customer"
     assert allow(t, cust={"consent": {"opted_in_at": None, "scope": []}})[1] == "no_consent"
     wrong = {"consent": {"opted_in_at": "2025-01-01", "scope": ["promotional_offers"]}}
-    assert allow(t, cust=wrong)[1] == "consent_scope_mismatch"
+    assert allow(t, cust=wrong) == (True, "ok")                                       # lenient default: any active opt-in
+    assert check_policy(t, M, CAT, wrong, {}, {}, NOW, False, consent_mode="strict")[1] == "consent_scope_mismatch"
     unknown_kind = trig("brand_new", customer_id="c1", scope="customer")
     assert allow(unknown_kind, cust=wrong) == (True, "ok")             # unknown mapping -> any active consent
     assert allow(unknown_kind, cust={"consent": {"scope": []}})[1] == "no_consent"
@@ -96,3 +97,11 @@ def test_scoring_prefers_urgent_expiring_fresh_and_penalises_recent_sends():
     assert score_trigger(soon, NOW, {}) > score_trigger(base, NOW, {})
     recent = {"last_proactive_ts": "2026-04-26T09:00:00Z"}
     assert score_trigger(base, NOW, recent) < score_trigger(base, NOW, {})
+
+
+def test_expired_triggers_rank_below_live_ones_but_are_still_returned():
+    live = trig(urgency=2, expires_at="2026-12-01T00:00:00Z")
+    stale = trig(urgency=2, expires_at="2025-01-01T00:00:00Z")
+    assert score_trigger(stale, NOW, {}) < score_trigger(live, NOW, {})
+    ds = decide([cand("old", "m1", 2, expires_at="2025-01-01T00:00:00Z"), cand("new", "m2", 2, expires_at="2026-12-01T00:00:00Z")], NOW, 20)
+    assert [d.trigger_id for d in ds] == ["new", "old"]

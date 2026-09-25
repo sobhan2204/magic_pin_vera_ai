@@ -49,6 +49,7 @@ class Fact:
     text: str                    # plain English, merchant-readable
     atoms: set[str] = field(default_factory=set)   # normalized numbers this fact licenses
     source: str = ""             # which context field it came from
+    hi: Optional[str] = None     # Hindi-English wording of the same fact (same numbers) for hi-en recipients
 
 
 @dataclass
@@ -64,6 +65,7 @@ class FactSheet:
     kind: str
     merchant_name: str = ""
     slots: list[str] = field(default_factory=list)
+    consent_note: str = ""
 
     def get(self, key: str) -> Optional[Fact]:
         for f in self.facts:
