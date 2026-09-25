@@ -70,8 +70,7 @@ async def test_later_waits(client):
 
 
 async def test_turn_cap(client):
-    a = await reply(client, "c1", "tell me more about it", 5)
-    assert a["action"] == "send" and a["cta"] == "none"
+    assert (await reply(client, "c1", "tell me more about it", 5))["action"] == "end"      # nothing pending -> just end
     assert (await reply(client, "c1", "and more?", 6))["action"] == "end"
 
 
