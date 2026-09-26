@@ -360,3 +360,14 @@ async def test_alt_provider_has_its_own_limits(fresh_env, monkeypatch):
     leases = await r.acquire_many(300, 20)
     models = [l.target.model for l in leases]
     assert models.count("openai/gpt-oss-120b") == 3 and models.count("openai/gpt-oss-20b") == 3 and models.count("alt-model") == 14
+
+
+async def test_structured_output_glitch_is_retried_once_without_cooling_the_model(live, fresh_env):
+    """Groq gpt-oss sometimes answers 400 tool_use_failed for a structured request: retry once, do not cool the model."""
+    glitch = httpx.Response(400, json={"error": {"code": "tool_use_failed", "message": "Tool choice is none, but model called a tool"}})
+    route = live.post(GROQ).mock(side_effect=[glitch, completion(msg("second try worked"))])
+    r = router_for(fresh_env)
+    out, res = await r.run(await r.acquire(500), [{"role": "user", "content": "x"}], max_tokens=100, validate=parse_output,
+                           deadline_at=time.monotonic() + 10)
+    assert out["body"] == "second try worked" and res.model.endswith("120b") and route.call_count == 2
+    assert (await r.state())["models"]["openai/gpt-oss-120b"]["cooling_s"] == 0

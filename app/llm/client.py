@@ -58,7 +58,7 @@ async def chat_completion(*, base_url: str, api_key: str, model: str, messages: 
     if schema is not None:
         if json_mode == "schema":
             body["response_format"] = {"type": "json_schema",
-                                       "json_schema": {"name": "vera_message", "strict": True, "schema": schema}}
+                                       "json_schema": {"name": "result", "strict": True, "schema": schema}}
         elif json_mode == "object":
             body["response_format"] = {"type": "json_object"}
     if reasoning_effort:
@@ -79,6 +79,9 @@ async def chat_completion(*, base_url: str, api_key: str, model: str, messages: 
         raise LLMError("auth", f"HTTP {r.status_code}")
     if r.status_code >= 500:
         raise LLMError("server", f"HTTP {r.status_code}")
+    if r.status_code == 400 and ("tool_use_failed" in r.text or "json_validate_failed" in r.text):
+        # gpt-oss sometimes emits a tool call / an unparsable JSON for a structured request: a generation glitch, not a bad request
+        raise LLMError("bad_output", f"provider could not produce the structured output: {r.text[:120]}")
     if r.status_code >= 400:
         raise LLMError("bad_request", f"HTTP {r.status_code}: {r.text[:200]}")
     try:

@@ -227,6 +227,7 @@ def main() -> int:
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--teardown-first", action="store_true", help="POST /v1/teardown before starting (clean slate)")
     ap.add_argument("--no-replies", action="store_true")
+    ap.add_argument("--dump", help="write every action sent (JSON) to this file")
     args = ap.parse_args()
 
     h = Harness(args.bot_url, args.quiet)
@@ -361,6 +362,8 @@ def main() -> int:
         else:
             print(f"  ok  {what}: {tid}")
 
+    if args.dump:
+        Path(args.dump).write_text(json.dumps(h.actions, ensure_ascii=False, indent=1), encoding="utf-8")
     print("== Summary ==")
     lat = sorted(d for _, d in h.latencies)
     p = lambda q: lat[min(len(lat) - 1, int(len(lat) * q))] if lat else 0

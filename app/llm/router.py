@@ -119,6 +119,7 @@ class Router:
                   ) -> Optional[tuple[Any, LLMResult]]:
         """Call the leased model; on 429/5xx/timeout/invalid output cool it and fail over. None => use fallback."""
         tried: set[str] = set()
+        glitches = 0
         est = lease.est_tokens if lease else estimate_tokens(messages, max_tokens)
         while lease is not None:
             t = lease.target
@@ -142,6 +143,10 @@ class Router:
                 failure = e.kind
                 # the provider did not process it: refund tokens, keep the request counted
                 await self.store.quota_adjust(t.model, -lease.est_tokens, time.time())
+                if e.kind == "bad_output" and glitches < 1:          # structured-output glitch: the model is healthy, ask once more
+                    glitches += 1
+                    log.info("llm structured-output glitch on %s; retrying once", t.model)
+                    continue
                 if e.kind == "rate_limit" and e.retry_after and e.retry_after > COOL_S:
                     await self.store.quota_cool(t.model, int(min(e.retry_after, 300)))
                     failure = None
