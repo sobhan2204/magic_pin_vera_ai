@@ -187,15 +187,9 @@ async def run_tick(store: Store, settings: Settings, body: dict) -> list[dict]:
             rationale=c.rationale,
         ).model_dump()
         ts = now.isoformat()
-        mstate = dict(mstates.get(t.merchant_id or "", {}))
-        mstate["unanswered"] = int(mstate.get("unanswered", 0)) + 1
-        mstate["last_proactive_ts"] = ts
-        mstate["active_convs"] = (mstate.get("active_convs") or []) + [action["conversation_id"]]
-        mstate["last_topic"] = t.kind
-        mstate["pending"] = {"kind": t.kind, "deliverable": pb.deliverable, "trigger_id": t.id,
-                             "hook": fs.text("hook"), "customer_id": t.customer_id}
+        pending = {"kind": t.kind, "deliverable": pb.deliverable, "trigger_id": t.id,
+                   "hook": fs.text("hook"), "customer_id": t.customer_id}
         writes = [
-            save_state(store, mkey(t.merchant_id, ""), mstate),
             store.set_json(f"conv:{action['conversation_id']}", {
                 "merchant_id": t.merchant_id, "customer_id": t.customer_id, "trigger_id": t.id, "kind": t.kind,
                 "send_as": fs.send_as, "language": fs.language, "slots": fs.slots,
@@ -206,11 +200,20 @@ async def run_tick(store: Store, settings: Settings, body: dict) -> list[dict]:
             store.list_push_cap("dbg:actions", {"trigger": t.id, "merchant": t.merchant_id, "body": c.body}, 20),
         ]
         if t.customer_id:
+            # customer-facing: only the CUSTOMER's conversation state changes; the merchant's open/unanswered state is untouched
             cs = dict(cstates.get(t.customer_id, {}))
             cs["unanswered"] = int(cs.get("unanswered", 0)) + 1
             cs["last_proactive_ts"] = ts
-            cs["pending"] = mstate["pending"]
+            cs["pending"] = pending
             writes.append(save_state(store, ckey(t.customer_id), cs))
+        else:
+            mstate = dict(mstates.get(t.merchant_id or "", {}))
+            mstate["unanswered"] = int(mstate.get("unanswered", 0)) + 1
+            mstate["last_proactive_ts"] = ts
+            mstate["active_convs"] = (mstate.get("active_convs") or []) + [action["conversation_id"]]
+            mstate["last_topic"] = t.kind
+            mstate["pending"] = pending
+            writes.append(save_state(store, mkey(t.merchant_id, ""), mstate))
         await asyncio.gather(*writes)
         return action
 

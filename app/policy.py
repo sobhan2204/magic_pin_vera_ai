@@ -43,9 +43,12 @@ def check_policy(t: Trigger, merchant: Optional[dict], category: Optional[dict],
         if not wanted and not scopes:
             return False, "no_consent"
 
-    unanswered = int(mstate.get("unanswered", 0) or 0)
+    # Restraint is per RECIPIENT: a merchant's open conversation must not block a message to one of their customers,
+    # and a customer's open conversation must not block a message to the merchant.
+    state = cstate if t.scope == "customer" else mstate
+    unanswered = int(state.get("unanswered", 0) or 0)
     if unanswered >= 1 and t.urgency < 4:
-        last = parse_dt(mstate.get("last_proactive_ts"))
+        last = parse_dt(state.get("last_proactive_ts"))
         if unanswered >= 2 or (last and now - last < OPEN_CONVERSATION_WINDOW):
             return False, "awaiting_reply"
     return True, "ok"
