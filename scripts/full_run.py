@@ -51,6 +51,7 @@ class Harness:
         self.warnings: list[str] = []
         self.latencies: list[tuple[str, float]] = []
         self.ctx: dict[tuple[str, str], tuple[int, dict]] = {}       # what we pushed (latest version per id)
+        self.prev: dict[tuple[str, str], dict] = {}                   # the payload a newer version replaced (merchants)
         self.bodies: Counter = Counter()
         self.actions: list[dict] = []
 
@@ -85,6 +86,8 @@ class Harness:
         code, j = self.call("POST", "/v1/context", {"scope": scope, "context_id": cid, "version": version, "payload": payload,
                                                      "delivered_at": when.isoformat().replace("+00:00", "Z")}, expect=(200,))
         if code == 200 and j.get("accepted"):
+            if scope == "merchant" and (scope, cid) in self.ctx and version > self.ctx[(scope, cid)][0]:
+                self.prev[(scope, cid)] = self.ctx[(scope, cid)][1]
             self.ctx[(scope, cid)] = (version, payload)
         elif code == 200:
             self.fail(f"context {scope}/{cid} v{version} not accepted: {j}")
@@ -95,6 +98,8 @@ class Harness:
         for scope, cid in (("merchant", a["merchant_id"]), ("customer", a.get("customer_id")), ("trigger", a["trigger_id"])):
             if cid and (scope, cid) in self.ctx:
                 blobs.append(json.dumps(self.ctx[(scope, cid)][1], ensure_ascii=False))
+        if ("merchant", a["merchant_id"]) in self.prev:                     # the earlier version was pushed by us too
+            blobs.append(json.dumps(self.prev[("merchant", a["merchant_id"])], ensure_ascii=False))
         m = self.ctx.get(("merchant", a["merchant_id"]))
         if m:
             cat = self.ctx.get(("category", m[1].get("category_slug")))
@@ -127,7 +132,7 @@ class Harness:
         cat = self.ctx.get(("category", m[1]["category_slug"]))
         cu = self.ctx.get(("customer", a["customer_id"])) if a.get("customer_id") else None
         trig = normalize_trigger(a["trigger_id"], tr[0], tr[1])
-        fs = build_factsheet(trig, m[1], cat[1], cu[1] if cu else None, now) if cat else None
+        fs = build_factsheet(trig, m[1], cat[1], cu[1] if cu else None, now, prev_merchant=self.prev.get(("merchant", a["merchant_id"]))) if cat else None
         if fs is None:
             self.fail(f"action {a['trigger_id']} but facts cannot be resolved from what we pushed")
             return
