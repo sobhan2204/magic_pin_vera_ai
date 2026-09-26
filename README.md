@@ -1,54 +1,154 @@
-# Vera merchant bot: magicpin AI Challenge
+# Vera, rebuilt: a merchant bot that never makes things up
 
-HTTP bot for magicpin's "Vera" (WhatsApp assistant for dentists, salons, restaurants, gyms, pharmacies). Vercel (Python/FastAPI) +
-Upstash Redis + Groq. Run/test/deploy guide: [`RUNNING_AND_TESTING.md`](RUNNING_AND_TESTING.md).
+> magicpin AI Challenge submission · FastAPI on Vercel · Upstash Redis · Groq + Cerebras
+> Run, test and deploy guide: [`RUNNING_AND_TESTING.md`](RUNNING_AND_TESTING.md)
 
-## Approach: deterministic code decides, the LLM only writes
+Most chatbots let the LLM decide *what* to say and *whether* to say it. This one doesn't.
+
+**Code decides. The LLM only writes. A verifier checks every word. If anything fails, a template that is guaranteed correct takes over.**
+
+The result is a bot that can't hallucinate a price, can't double-message a merchant, can't loop on an auto-reply, and always answers within the time limit, even when the LLM is rate-limited or down.
+
+---
+
+## The map
+
+```mermaid
+flowchart LR
+    J["magicpin judge"] -->|"push context"| C["/v1/context"]
+    J -->|"every 5 sim-min"| T["/v1/tick"]
+    J -->|"merchant replies"| R["/v1/reply"]
+    J -->|"liveness"| H["/v1/healthz"]
+
+    C -->|"versioned CAS write"| DB[("Upstash Redis<br/>contexts · state · dedup · quota")]
+    T --> P["Compose pipeline"]
+    R --> E["Reply engine"]
+    P <--> DB
+    E <--> DB
+
+    P --> L{"LLM chain"}
+    E --> L
+    L -->|"1"| G1["Groq gpt-oss-120b"]
+    L -->|"2"| G2["Groq gpt-oss-20b"]
+    L -->|"3"| CB["Cerebras gpt-oss-120b"]
+    L -->|"quota gone / error"| F["Deterministic templates"]
+```
+
+Everything lives in Redis because Vercel functions are stateless. Nothing important is ever held in process memory.
+
+---
+
+## What happens on a tick
+
+```mermaid
+flowchart TD
+    A["available_triggers"] --> N["Normalize<br/>one canonical trigger shape"]
+    N --> RS["Resolve<br/>latest contexts → numbered fact sheet"]
+    RS --> PG{"Policy gate<br/>consent · opt-out · already sent · restraint"}
+    PG -->|"blocked"| X["no_op (logged, not sent)"]
+    PG -->|"allowed"| D["Decide<br/>score · 1 per merchant · cap 20 · pick hook fact"]
+    D --> W["Write<br/>LLM sees only the fact sheet"]
+    W --> V{"Verify"}
+    V -->|"pass"| OK["Action"]
+    V -->|"fail"| RP["Repair once"]
+    RP --> V2{"Verify"}
+    V2 -->|"pass"| OK
+    V2 -->|"fail"| TF["Template composer"]
+    TF --> OK
+    OK --> DD["Dedup + atomic send reservation"]
+```
+
+**1. Normalize.** Triggers arrive in slightly different shapes (`merchant_id` at the top level or inside `payload`). Everything becomes one canonical object before anything else touches it.
+
+**2. Resolve.** The bot joins trigger → merchant → category → customer, **always using the latest pushed version**. That's how injected data (new digest items, updated performance numbers, a brand-new customer) shows up in the very next message. The output is a closed, numbered fact sheet:
 
 ```
-normalize -> resolve (closed fact sheet) -> policy gate -> decide -> write (LLM) -> verify -> repair (1x) -> template fallback
+F1  CTR 2.1% vs locality median 3.0%
+F2  JIDA Oct 2026, p.14: 2,100-patient trial, 38% fewer caries with 3-month recall
+F3  Active offer: Dental Cleaning @ ₹299
 ```
 
-* **Decide in code.** Whether to send, to whom, and why: expiry, consent scopes, opt-outs, restraint (no second nudge while a
-  conversation is open, none after two unanswered sends unless urgent), one action per merchant per tick, cap 20, scoring by
-  urgency + expiry proximity + freshness. Three dedup layers: event reservation (atomic `SET NX`), action identity (next-best hook
-  fact if already sent), wording similarity.
-* **Resolve facts in code.** Every number the message may use (months since a visit, days to a deadline, CTR as a %, peer gaps) is
-  computed from the latest pushed contexts and handed to the writer as a numbered, plain-English fact list. Adaptive injections
-  (new digest items, new performance numbers, new customers, unseen trigger kinds) are picked up because facts are re-resolved
-  from the newest context versions at decision time.
-* **Write with an LLM inside a closed world.** `openai/gpt-oss-120b` (primary) then `openai/gpt-oss-20b`, temperature 0, fixed seed,
-  low reasoning effort, Groq strict JSON-schema output. The prompt lists only the facts and one original style example.
-* **Verify everything.** Numbers, names and entities must trace to a fact; taboo words, jargon/field names, URLs, multiple asks,
-  wrong salutation ("Dr. Meera"), missing Hindi-English code-mix and near-duplicates are rejected; the rationale is checked against
-  the message. One repair call, then a **deterministic template composer** that passes the same verifier for every trigger kind in the
-  dataset. The bot therefore always has a valid, grounded answer (no key, no quota, 429s, timeouts, slow model).
-* **Replies are rules-first** with merchant-level (not conversation-level) memory: opt-out, hostile, canned auto-reply (detected
-  across different conversation ids: one owner-directed line, then exit), commitment -> action mode (lint forbids qualifying
-  questions), later/busy, off-topic (polite redirect), and an LLM-answered question path that is verified like an outbound message.
+Code does all the arithmetic (days to a deadline, % change, months since a visit), so the LLM never computes a number.
 
-## Model choice and why
+**3. Policy gate.** No consent, opted out, already sent, or merchant still hasn't replied to the last nudge → skip. Holding back is rewarded; spam isn't.
 
-`gpt-oss-120b` for quality and reliable structured JSON, `gpt-oss-20b` as the fast/cheap second model on the same key, an optional
-independent OpenAI-compatible provider wired but off by default, and the template fallback for a guarantee of validity. Groq's free
-tier is small (8k tokens/min per model), so quota is reserved atomically **before** each call, in score order: the best decisions
-get the LLM, the rest get verified templates, and we never trigger a 429 on purpose.
+**4. Decide.** Rank by urgency, expiry and freshness. One action per merchant, at most 20 per tick. Choose the single fact the message should lead with.
 
-## Trade-offs
+**5. Write.** The LLM gets the fact sheet, the category's voice and taboo words, the language rule (Hindi-English when the merchant speaks Hindi), and one example. It returns strict JSON at temperature 0.
 
-* **Serverless + Redis:** nothing lives in process memory; all state, atomic version checks and quota counters are in Upstash. Cost:
-  more round-trips (a full judge run is ~6-9k commands).
-* **Closed-world grounding over creativity:** the writer may not add colour that is not in the data (no invented studies, prices,
-  competitors). This costs some flair and protects against the fabrication penalty.
-* **Restraint over spam:** we skip sends that would be a second nudge to an unanswered merchant, or that are near-duplicates.
-  `expires_at` only ranks triggers, it never suppresses one the judge lists as active. Customer sends need an active opt-in (lenient) and the
-  rationale states which consent was used.
-* **Batch composition** (`LLM_BATCH_SIZE=3`, default): several decisions per LLM call because the free-tier token limit is the
-  bottleneck; quota goes to the best-scored decisions first, failed items fall back to the verified template.
-* **Determinism:** temperature 0 + seed + a per-(trigger, context versions, day, prompt version) draft cache.
+**6. Verify.** Every number, price, date and name in the body must trace back to a fact. It also rejects taboo words, internal field names, a second question, a wrong salutation, and anything too close to a message already sent. One repair attempt; after that, the template takes over. **Every template passes the same verifier for every trigger kind in the dataset**, so the fallback can't be the weak link.
 
-## What extra context would help most
+---
 
-Real slot availability and price catalogues per merchant (so customer messages can quote more than the offers list), per-merchant
-conversation outcomes (to learn which levers work), a merchant/customer timezone and quiet hours, and the judge's simulated clock in
-`/v1/tick` for every call (the simulator uses the real clock, which makes seed triggers look expired).
+## What happens on a reply
+
+Rules run first, in strict order. The LLM only sees genuine conversation.
+
+```mermaid
+flowchart LR
+    M["merchant message"] --> O{"opt-out?"} -->|"yes"| END1["end"]
+    O -->|"no"| HO{"hostile?"} -->|"yes"| APO["one calm line, stay open"]
+    HO -->|"no"| AR{"auto-reply?"} -->|"1st"| ONE["one line for the owner"]
+    AR -->|"2nd"| END2["end"]
+    AR -->|"no"| CM{"yes / let's do it?"} -->|"yes"| ACT["action mode: deliver next step"]
+    CM -->|"no"| LT{"later / busy?"} -->|"yes"| WAIT["wait"]
+    LT -->|"no"| OT{"off-topic?"} -->|"yes"| RED["polite redirect"]
+    OT -->|"no"| LLM["LLM answer, verified"]
+```
+
+Two details that matter:
+- **Memory is per merchant, not per conversation.** magicpin's auto-reply test sends the same canned text on four *different* conversation IDs. Tracking by merchant catches it on the second one.
+- **Auto-reply is checked before "yes".** Canned replies often contain words like "received" or "yes", and would otherwise trigger action mode by mistake.
+
+---
+
+## Real output from a live run
+
+> **IPL match day (restaurant, Delhi)**
+> *Suresh, aaj raat 7:30pm Arun Jaitley Stadium mein DC vs MI match hai. Yeh weeknight nahi hai, isliye aapke Buy 1 Pizza Get 1 Free (Tue-Thu) offer ko delivery par focus karna behtar rahega. Kya main match ke liye promo message draft kar doon?*
+
+> **Recall reminder (sent on behalf of a dentist)**
+> *Hi Priya, Dr. Meera's Dental Clinic here. Your 6-month cleaning recall is due. Wed 5 Nov at 6pm or Thu 6 Nov at 5pm are open, and Dental Cleaning @ ₹299 is on right now. Aap chahein toh Reply 1 for Wed, 2 for Thu, ya apna time bata dijiye.*
+
+> **"Ok lets do it. Whats next?"**
+> *Theek hai, aage badhte hain. Next step: main draft taiyaar karke yahin bhej doon. Aap Reply CONFIRM kar dijiye.*
+
+Every number above came from the pushed context. None were added by the model.
+
+---
+
+## How it held up
+
+| Check | Result |
+|---|---|
+| Unit + integration tests | 300+ passing, zero API calls (mock LLM) |
+| magicpin's `judge_simulator.py` | warmup, auto-reply, intent, hostile: all pass |
+| Full judge-style run on Vercel (12 ticks, 255 contexts, injected data) | 89 messages, 89 unique, 0 errors |
+| Latency on Vercel | p95 0.65 s, worst 4.3 s (limit 30 s) |
+| LLM outage test (bad keys) | still sends valid, grounded messages from templates |
+
+---
+
+## Model choice
+
+| Order | Model | Why |
+|---|---|---|
+| 1 | Groq `gpt-oss-120b` | best instruction-following and JSON, good Hinglish |
+| 2 | Groq `gpt-oss-20b` | separate quota, very fast |
+| 3 | Cerebras `gpt-oss-120b` | separate provider: survives a Groq outage |
+| 4 | Deterministic templates | always valid, zero cost, zero latency |
+
+Free tiers allow roughly 8K tokens per minute per model, so the bot **reserves quota atomically before each call** and spends it on the highest-ranked messages first. It never fires a request it knows will 429.
+
+---
+
+## Trade-offs I chose on purpose
+
+- **Grounding over flair.** The writer can't add colour that isn't in the data: no invented studies, competitors or freebies. Some messages are plainer; none are fabricated.
+- **Restraint over volume.** No second nudge while a merchant hasn't replied; no near-duplicate messages.
+- **Serverless + Redis.** No always-on server to babysit, at the cost of more Redis round-trips (all atomic: version checks, send reservations, quota counters).
+- **Determinism.** Temperature 0, a fixed seed, and a draft cache keyed on (trigger, context versions, day, prompt version): the same input always gives the same message.
+
+## What would make it better
+
+Real appointment slots and price lists per merchant, outcome data on which messages actually got replies, merchant quiet hours, and the judge's simulated clock on every call (the local simulator uses the real clock, which makes the seed triggers look expired).
