@@ -249,3 +249,21 @@ def test_every_expanded_trigger_composes_clean(dataset):
         assert re.match(rf"^(Hi )?{re.escape(fs.salutation)}(?:,| —) |^Quick one, {re.escape(fs.salutation)}:", body), (t["id"], body)
         composed += 1
     assert composed >= 80 and skipped >= 1
+
+
+def test_item3_renewal_with_no_subscription_data_is_never_a_renewal_push(dataset):
+    """Live run: trg_091 (no plan/days anywhere) said 'Reply YES ... renewal set kar doon' with no renewal fact in the body."""
+    mid = next(m["merchant_id"] for m in dataset["merchants"] if m["category_slug"] == "pharmacies")
+
+    def no_sub(m, c):
+        m.pop("subscription", None)
+    trig, fs, c = compose(dataset, thin("renewal_due", mid, urgency=4), None, no_sub)
+    assert fs.kind == "renewal_value" and "renewal" not in c.body.lower() and "value check-in" in c.rationale, c.body
+
+
+def test_item3_value_message_does_not_talk_about_the_plan_term(dataset):
+    def far(m, c):
+        m["subscription"] = {"status": "active", "plan": "Pro", "days_remaining": 211}
+    m13 = next(m["merchant_id"] for m in dataset["merchants"] if m["category_slug"] == "restaurants")
+    trig, fs, c = compose(dataset, thin("renewal_due", m13, urgency=4), None, far)
+    assert fs.kind == "renewal_value" and "211" not in c.body and "plan" not in c.body.lower(), c.body

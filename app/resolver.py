@@ -397,6 +397,7 @@ def _renewal(c: Ctx) -> bool:
         elif sub.get("status") == "active" and isinstance(sub.get("days_remaining"), (int, float)):
             days = sub["days_remaining"]
         else:
+            c.kind = "renewal_value"                 # nothing says the plan is near its end: never push a renewal
             return False
     if days <= 0 or (sub.get("status") == "expired" and not c.p.get("days_remaining")):
         ago = -days if days < 0 else (sub.get("days_since_expiry") or 0)

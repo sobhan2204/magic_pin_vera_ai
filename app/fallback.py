@@ -74,7 +74,7 @@ def compose_fallback(fs: FactSheet, pb: Playbook, seed: str, variant: Optional[i
                 break
         if statement and not supports:                       # thin payload: one more concrete fact from the merchant/customer
             for f in fs.facts:
-                if f.key != "hook" and not f.key.startswith(("t.", "cat.")) and f.text != hook_fact.text                         and not repeated_facts(f"{hook}. {_txt(fs, f)}."):
+                if f.key != "hook" and not f.key.startswith(("t.", "cat.")) and f.text != hook_fact.text                         and not (fs.kind == "renewal_value" and f.key in ("m.subscription", "m.expired"))                         and not repeated_facts(f"{hook}. {_txt(fs, f)}."):
                     supports.append(_no_repeat_source(strip_end(_txt(fs, f)), hook))
                     used.append(f.id)
                     break
