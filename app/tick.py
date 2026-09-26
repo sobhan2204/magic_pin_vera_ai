@@ -121,7 +121,7 @@ async def run_tick(store: Store, settings: Settings, body: dict) -> list[dict]:
                            await asyncio.gather(*(_recent_bodies(store, d.merchant_id) for d in todo))))
         planned = []                                     # (group items, lease) - quota goes to the best-scored groups first
         for group in groups:
-            items = [(by_id[d.trigger_id][0], by_id[d.trigger_id][1], get_playbook(by_id[d.trigger_id][0].kind),
+            items = [(by_id[d.trigger_id][0], by_id[d.trigger_id][1], get_playbook(by_id[d.trigger_id][1].kind),
                       recents[d.trigger_id]) for d in group]
             est = estimate_tokens([{"content": "x" * (1500 + 2200 * len(items))}], MAX_TOKENS * len(items))
             lease = await router.acquire(est)            # sequential on purpose: deterministic priority by score
@@ -145,7 +145,7 @@ async def run_tick(store: Store, settings: Settings, body: dict) -> list[dict]:
         t, fs = by_id[d.trigger_id]
         recent, sent_fps = await asyncio.gather(_recent_bodies(store, d.merchant_id),
                                                 store.smembers(f"sent:action:{d.merchant_id}"))
-        pb = get_playbook(t.kind)
+        pb = get_playbook(fs.kind)
         # dedup layers 2+3: try the planned hook, then the next-best hook facts, until the action is new
         # (layer 2) and the wording is not a near-duplicate of anything already sent (layer 3, in verify()).
         options = [fs] + [o for o in (promote_hook(fs, k) for k in alternate_hook_keys(fs, pb.support_keys)) if o]
@@ -180,7 +180,7 @@ async def run_tick(store: Store, settings: Settings, body: dict) -> list[dict]:
         # dedup layer 1: atomic event reservation
         if not await store.set_nx(event_key(t), "1", EVENT_TTL_S):
             return None
-        pb = get_playbook(t.kind)
+        pb = get_playbook(fs.kind)
         action = Action(
             conversation_id=conversation_id(t), merchant_id=t.merchant_id or "", customer_id=t.customer_id,
             send_as=fs.send_as, trigger_id=t.id,

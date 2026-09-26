@@ -109,6 +109,11 @@ _ALL = [
         levers=("loss_aversion", "specificity"), cta_type="binary_yes_stop", support_keys=("m.perf30",),
         ask_en="Reply YES and I'll set up your renewal.", ask_hi="Aap Reply YES kar dijiye, main renewal set kar doon.",
         deliverable="your renewal", why_now="plan is close to expiry"),
+    _pb(kind="renewal_value", objective="The plan has plenty of time left: show what it is doing for them, no renewal push",
+        levers=("specificity", "reciprocity"), support_keys=("m.perf30", "m.offers"),
+        ask_en="Want me to go through what's working on your profile and suggest one thing to improve?",
+        ask_hi="Kya main dekh loon ki aapke profile par kya achha chal raha hai aur ek cheez suggest kar doon jo sudhar sakti hai?",
+        deliverable="a short profile review", why_now="the plan has plenty of time left, so this is a value check-in, not a renewal push"),
     _pb(kind="winback_eligible", objective="Restart a lapsed subscription by showing what it cost them",
         levers=("loss_aversion", "specificity"), cta_type="binary_yes_stop", support_keys=("t.lapsed", "m.perf30"),
         ask_en="Reply YES and I'll set up your restart.", ask_hi="Aap Reply YES kar dijiye, main aapka restart set kar doon.",
@@ -183,6 +188,40 @@ _ALL = [
 
 PLAYBOOKS: dict[str, Playbook] = {p.kind: p for p in _ALL}
 GENERIC = PLAYBOOKS["generic"]
+
+
+# Customer-facing kinds that only make sense for some businesses (a dentist has no "refill", a pharmacy no "trial class").
+# Anything not listed fits every category. A mismatch is a no_op ("kind_category_mismatch"), never a wrong-sounding message.
+KIND_CATEGORIES = {
+    "chronic_refill_due": {"pharmacies"},
+    "wedding_package_followup": {"salons"},
+    "trial_followup": {"gyms", "salons"},
+    "appointment_tomorrow": {"dentists", "salons", "gyms", "restaurants"},
+}
+
+
+def kind_fits_category(kind: str, category_slug: str) -> bool:
+    allowed = KIND_CATEGORIES.get(kind)
+    return allowed is None or not category_slug or category_slug in allowed or category_slug not in _KNOWN_CATEGORIES
+
+
+_KNOWN_CATEGORIES = {"dentists", "salons", "restaurants", "gyms", "pharmacies"}
+
+# What the customer is invited to do, in that business's words (used when there are no concrete slots to offer).
+CUSTOMER_ASK = {
+    "gyms": ("Reply YES and we'll share the next available sessions.", "Aap Reply YES kar dijiye, hum agle available sessions bhej denge."),
+    "pharmacies": ("Reply YES and we'll get your medicines ready.", "Aap Reply YES kar dijiye, hum aapki medicines ready kar denge."),
+    "restaurants": ("Reply YES and we'll keep a table ready for you.", "Aap Reply YES kar dijiye, hum aapke liye table ready rakhenge."),
+}
+_CATEGORY_ASK_KINDS = {"recall_due", "customer_lapsed_soft"}
+
+
+def category_ask(pb: "Playbook", category_slug: str, hindi: bool):
+    """Category-specific ask for customer recall/lapsed messages, or None to keep the playbook's own."""
+    pair = CUSTOMER_ASK.get(category_slug)
+    if pair and pb.kind in _CATEGORY_ASK_KINDS:
+        return pair[1] if hindi else pair[0]
+    return None
 
 
 def get_playbook(kind: str) -> Playbook:

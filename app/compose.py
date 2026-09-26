@@ -17,7 +17,7 @@ from .models import FactSheet
 from .normalize import Trigger
 from .playbooks import Playbook, get_playbook
 from .store.base import Store
-from .verifier import verify, verify_rationale
+from .verifier import polish, verify, verify_rationale
 from .writer import write_with_llm
 
 log = logging.getLogger("vera.compose")
@@ -58,7 +58,7 @@ def draft_cache_key(t: Trigger, versions: dict, tick_date: str, hook_key: str = 
 def build_rationale(t: Trigger, pb: Playbook, fs: FactSheet, cta: str) -> str:
     hook = fs.text("hook") or ""
     why = pb.why_now or "new information arrived"
-    text = (f"{words(t.kind)} trigger ({why}; urgency {t.urgency}/5); leading with “{strip_end(hook)}”; "
+    text = (f"{words(fs.kind)} trigger ({why}; urgency {t.urgency}/5); leading with “{strip_end(hook)}”; "
             f"objective: {pb.objective}; CTA: {cta}.")
     if fs.consent_note:
         text += f" Consent: {fs.consent_note}."
@@ -67,8 +67,8 @@ def build_rationale(t: Trigger, pb: Playbook, fs: FactSheet, cta: str) -> str:
 
 def _finish(t: Trigger, pb: Playbook, fs: FactSheet, out: dict, via: str, violations: list[str]) -> Composed:
     rationale = build_rationale(t, pb, fs, out["cta"])
-    if verify_rationale(rationale, out["body"], fs, words(t.kind)):
-        rationale = f"{words(t.kind)} trigger; objective: {pb.objective}; CTA: {out['cta']}."
+    if verify_rationale(rationale, out["body"], fs, words(fs.kind)):
+        rationale = f"{words(fs.kind)} trigger; objective: {pb.objective}; CTA: {out['cta']}."
     hook = fs.text("hook") or ""
     body = out["body"]
     ask = body.rsplit(". ", 1)[-1] if ". " in body else body
@@ -78,7 +78,7 @@ def _finish(t: Trigger, pb: Playbook, fs: FactSheet, out: dict, via: str, violat
 
 def compose_template(t: Trigger, fs: FactSheet, recent_bodies: list[str]) -> Composed:
     """Deterministic, always-valid composer (no LLM)."""
-    pb = get_playbook(t.kind)
+    pb = get_playbook(fs.kind)
     best, best_v = None, None
     for variant, minimal in [(None, False)] + [(i, False) for i in range(N_VARIANTS)] + [(None, True)]:
         out = compose_fallback(fs, pb, t.id, variant=variant, minimal=minimal)
@@ -92,7 +92,7 @@ def compose_template(t: Trigger, fs: FactSheet, recent_bodies: list[str]) -> Com
 
 
 async def compose_message(env: ComposeEnv, t: Trigger, fs: FactSheet, recent_bodies: list[str]) -> Composed:
-    pb = get_playbook(t.kind)
+    pb = get_playbook(fs.kind)
     s = env.settings
 
     if env.cache_key:                                                         # determinism: same inputs -> same draft
@@ -107,6 +107,7 @@ async def compose_message(env: ComposeEnv, t: Trigger, fs: FactSheet, recent_bod
 
     out, via = None, ""
     if env.llm_out is not None:
+        polish(env.llm_out, fs)
         if not verify(env.llm_out, fs, recent_bodies):
             out, via = env.llm_out, "llm"
     elif env.allow_llm and s.llm_mode == "mock":

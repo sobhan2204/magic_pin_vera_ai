@@ -34,9 +34,11 @@ def decide(candidates: list[tuple[Trigger, FactSheet, dict]], now: datetime, cap
     """candidates: (trigger, factsheet, merchant_state) that already passed the policy gate."""
     scored: list[tuple[float, str, Decision]] = []
     for t, fs, mstate in candidates:
-        pb = get_playbook(t.kind)
+        pb = get_playbook(fs.kind)
         hook = fs.get("hook")
         s = score_trigger(t, now, mstate)
+        if fs.kind == "renewal_value":
+            s -= 25                                      # no renewal push this far out: let any other trigger win
         scored.append((s, t.id, Decision(
             action="send", trigger_id=t.id, merchant_id=t.merchant_id or "", customer_id=t.customer_id,
             objective=pb.objective, hook_fact_id=hook.id if hook else "",

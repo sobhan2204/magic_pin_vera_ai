@@ -12,7 +12,7 @@ from .playbooks import Playbook
 from .prompts import (BATCH_IDS, BATCH_SCHEMA, MAX_TOKENS, MESSAGE_SCHEMA, build_batch_messages, build_repair_messages,
                       build_writer_messages, parse_batch, parse_output)
 from .playbooks import get_playbook
-from .verifier import changed_field_used, hook_covered, ungrounded_sentences, verify
+from .verifier import changed_field_used, hook_covered, polish, ungrounded_sentences, verify
 
 log = logging.getLogger("vera.writer")
 
@@ -21,6 +21,7 @@ _SPECULATION = re.compile(r"\b(risk\w*|ignor\w*|affect\w*|impact\w*|hurt\w*|dama
 
 
 def check(out: dict, fs: FactSheet, recent: list[str]) -> list[str]:
+    polish(out, fs)
     v = verify(out, fs, recent)
     if not v and not changed_field_used(out["body"], fs, get_playbook(fs.kind).changed_first):
         v.append("the merchant's data was updated: use the updated field (see the fact starting 'Your Google profile now shows')")

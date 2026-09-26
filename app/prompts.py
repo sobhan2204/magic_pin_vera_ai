@@ -10,7 +10,7 @@ from typing import Any
 
 from .models import CTA_TYPES, FactSheet
 from .normalize import Trigger
-from .playbooks import Playbook
+from .playbooks import Playbook, category_ask
 
 MAX_FACTS = 9
 MAX_TOKENS = 450
@@ -64,7 +64,7 @@ def select_facts(fs: FactSheet, pb: Playbook) -> list:
             chosen.append(f)
 
     take(fs.get("hook"))
-    for k in (*_FACT_ORDER_EXTRA, "t.kind", *(("m.changed",) if pb.changed_first and fs.send_as == "vera" else ()), *pb.support_keys):
+    for k in (*_FACT_ORDER_EXTRA, *(("m.changed",) if pb.changed_first and fs.send_as == "vera" else ()), *pb.support_keys):
         take(fs.get(k))
     for f in fs.facts:
         take(f)
@@ -88,9 +88,9 @@ def ask_example(fs: FactSheet, pb: Playbook) -> str:
     from .fallback import _slot_ask
     slot = _slot_ask(fs, pb)
     hook = fs.get("hook")
-    if not slot and (fs.get("t.kind") or (hook and hook.source == "trigger.kind")) and pb.stmt_ask_en:
+    if not slot and (hook and hook.source.startswith("thin:")) and pb.stmt_ask_en:
         return pb.stmt_ask_hi if fs.language == "hi-en" and pb.stmt_ask_hi else pb.stmt_ask_en
-    return slot or (pb.ask_hi if fs.language == "hi-en" else pb.ask_en)
+    return slot or category_ask(pb, fs.category_slug, fs.language == "hi-en") or (pb.ask_hi if fs.language == "hi-en" else pb.ask_en)
 
 
 def _block_lines(fs: FactSheet, pb: Playbook) -> list[str]:

@@ -60,7 +60,7 @@ def test_perf_dip_uses_real_negative_data_and_never_claims_a_number_it_lacks(dat
         m["performance"]["views"], m["performance"]["calls"] = 5000, 500       # also above peers
     _, fs2 = sheet(dataset, _t("perf_dip", mid), mutate=flat)
     assert fs2.text("hook").startswith("Your Google profile shows 500 calls")        # strongest merchant fact (peer gap)
-    assert fs2.text("t.kind") == "Your profile numbers have dipped recently"         # the trigger is the one supporting sentence
+    assert fs2.get("t.kind") is None                                                 # no generic kind sentence, ever
 
 
 def test_renewal_and_winback_use_the_subscription_facts(dataset):
@@ -99,7 +99,7 @@ def test_gbp_uses_the_merchants_own_verified_flag(dataset):
 def test_seasonal_kinds_use_the_categorys_seasonal_note(dataset):
     _, fs = sheet(dataset, _t("festival_upcoming", "m_007_powerhouse_gym_bangalore"))
     assert "seasonal pattern for Apr-Jun" in fs.text("cat.season")                    # available as a fact ...
-    assert fs.text("hook") != fs.text("cat.season") and fs.get("t.kind")               # ... but the lead is the strongest merchant fact
+    assert fs.text("hook") != fs.text("cat.season") and fs.get("t.kind") is None   # ... but the lead is the strongest merchant fact
 
 
 # ---- consent mode ---------------------------------------------------------------------------------------------------
@@ -155,11 +155,11 @@ def test_kind_level_statements_do_not_drag_in_unrelated_numbers(dataset):
     m = next(x for x in dataset["merchants"] if x["category_slug"] == "salons" and not x.get("review_themes"))
     t = _t("review_theme_emerged", m["merchant_id"])
     trig, fs = sheet(dataset, t)
-    assert fs.get("t.kind").text == "Recent reviews are showing a recurring theme"     # the trigger is the supporting fact
-    assert fs.get("hook").source.startswith("merchant.")                            # ... and the lead is the strongest merchant fact
+    assert fs.get("t.kind") is None                                                 # no generic kind sentence
+    assert fs.get("hook").source.startswith("thin:merchant.")                         # ... and the lead is the strongest merchant fact
     body = compose_template(trig, fs, []).body
-    assert "theme" in body and "themes" in body                           # kind statement + honest 'pull the themes' ask
-    assert [f.key for f in select_facts(fs, get_playbook(trig.kind))][:2] == ["hook", "t.kind"]
+    assert "themes" in body                                              # honest 'pull the themes' ask
+    assert "recurring theme" not in body.replace("themes", "")
 
 
 def test_speculation_lint_allows_words_the_facts_use(dataset):

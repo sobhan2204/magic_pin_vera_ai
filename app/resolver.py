@@ -17,7 +17,7 @@ from .humanize import (
 from .models import Fact, FactSheet
 from .normalize import Trigger
 from .playbooks import get_playbook
-from .verifier import extract_numbers
+from .verifier import extract_numbers, repeated_facts
 
 _KIND_WORD = {"research": "study", "compliance": "circular", "cde": "session", "trend": "trend",
               "tech": "launch", "alert": "alert"}
@@ -59,6 +59,7 @@ class Ctx:
         self.facts: list[Fact] = []
         self.slots: list[str] = []
         self.entities: set[str] = set()
+        self.kind = trigger.kind                       # effective kind (a renewal can turn into a value check-in or a winback)
 
     # --- fact plumbing ---------------------------------------------------------------
     def add(self, key: str, text: str, source: str, entities: tuple = (), hi: Optional[str] = None) -> None:
@@ -150,7 +151,8 @@ def _digest_hook(c: Ctx, item: dict) -> None:
         n = (c.m.get("customer_aggregate") or {}).get("high_risk_adult_count")
         if n and "risk" in str(item.get("patient_segment", "")):
             summ += f", and your patient records show {fmt_num(n)} high-risk adult patients"
-        c.add("t.summary", summ, "category.digest.summary")
+        if not repeated_facts(f"{title}. {summ}."):                 # the summary often just restates the title
+            c.add("t.summary", summ, "category.digest.summary")
     if item.get("trial_n"):
         seg = words(item.get("patient_segment", "patients")).replace("adults", "adult patients")
         c.add("t.trial", f"The trial covered {fmt_num(item['trial_n'])} {seg}", "category.digest.trial_n")
@@ -203,15 +205,36 @@ def _months_hook(c: Ctx) -> Optional[str]:
     return f"It's been {plural(n, 'month')} since your last visit" if n else None
 
 
+# Customer-facing wording per business: (recall without a named service, tail after "it's been N months", the same in Hindi-English)
+_CUSTOMER_TERMS = {
+    "dentists": ("it's time for your regular check-up and cleaning", "Aapke regular check-up aur cleaning ka time ho gaya hai",
+                 "so a check-up is due", "isliye ek check-up due hai"),
+    "pharmacies": ("it's time to refill your regular medicines", "Aapki regular medicines ke refill ka time ho gaya hai",
+                   "so it's a good time to refill your medicines", "isliye medicines refill karne ka achha time hai"),
+    "gyms": ("it's time to get back to your workouts with us", "Aapke workout sessions par wapas aane ka time ho gaya hai",
+             "so your next session is waiting for you", "isliye aapka agla session aapka intezaar kar raha hai"),
+    "salons": ("it's time for your next salon appointment", "Aapke agle salon appointment ka time ho gaya hai",
+               "so it's time to book your next appointment", "isliye agla appointment book karne ka time hai"),
+    "restaurants": ("it's time for your next visit", "Aapke agle visit ka time ho gaya hai",
+                    "so we'd love to see you again", "isliye hum aapse phir milna chahenge"),
+}
+
+
+def _terms(c: Ctx) -> tuple[str, str, str, str]:
+    slug = c.m.get("category_slug") or c.cat.get("slug", "")
+    return _CUSTOMER_TERMS.get(slug, _CUSTOMER_TERMS["dentists"])
+
+
 def _recall(c: Ctx) -> bool:
     service = c.p.get("service_due")
-    due = f"your {words(service)} recall is due" if service else "it's time for your regular check-up"
+    generic_en, generic_hi, _, _ = _terms(c)
+    due = f"your {words(service)} recall is due" if service else generic_en
     ago = _months_hook(c)
     n = months_between(parse_dt(((c.cust or {}).get("relationship") or {}).get("last_visit")), c.now)
     n = n if n and n <= 60 else None
     svc = words(service) if service else None
     hi = (f"Aapki last visit ko {n} mahine ho gaye hain, aur aapka {svc} recall due hai" if n and svc else
-          f"Aapka {svc} recall due hai" if svc else "Aapke regular check-up ka time ho gaya hai")
+          f"Aapka {svc} recall due hai" if svc else generic_hi)
     c.add("hook", f"{ago}, and {due}" if ago else due.capitalize(), "trigger.recall", hi=hi)
     dd = c.dt("due_date")
     if dd:
@@ -225,13 +248,14 @@ def _lapsed_soft(c: Ctx) -> bool:
     last = parse_dt(((c.cust or {}).get("relationship") or {}).get("last_visit"))
     n = months_between(last, c.now)
     if ago:
-        c.add("hook", ago + ", so a quick check-up is due", "customer.relationship",
-              hi=f"Aapki last visit ko {n} mahine ho gaye hain, isliye ek quick check-up due hai" if n else None)
+        _, _, tail_en, tail_hi = _terms(c)
+        c.add("hook", f"{ago}, {tail_en}", "customer.relationship",
+              hi=f"Aapki last visit ko {n} mahine ho gaye hain, {tail_hi}" if n else None)
     elif last:
         c.add("hook", f"Your last visit with us was on {fmt_date(last)}", "customer.relationship",
               hi=f"Aapki last visit {fmt_date(last)} ko thi")
     else:
-        c.add("hook", "We haven't seen you in a while", "customer.relationship")
+        return False                                            # nothing concrete about this customer: the generic path decides
     c.collect_slots(c.p.get("available_slots"))
     return True
 
@@ -251,8 +275,11 @@ def _lapsed_hard(c: Ctx) -> bool:
 
 def _appointment(c: Ctx) -> bool:
     label = c.p.get("label") or c.p.get("slot_label")
-    c.add("hook", f"Your appointment with us is tomorrow, {label}" if label else "Your appointment with us is tomorrow",
-          "trigger.appointment")
+    slug = c.m.get("category_slug") or c.cat.get("slug", "")
+    what, what_hi = {"gyms": ("session", "session"), "restaurants": ("table booking", "table booking")}.get(slug, ("appointment", "appointment"))
+    c.add("hook", f"Your {what} with us is tomorrow, {label}" if label else f"Your {what} with us is tomorrow",
+          "trigger.appointment",
+          hi=f"Aapka {what_hi} kal hai, {label}" if label else f"Aapka humare saath {what_hi} kal hai")
     return True
 
 
@@ -354,10 +381,40 @@ def _seasonal_dip(c: Ctx) -> bool:
     return True
 
 
+RENEWAL_PUSH_DAYS = 30           # a renewal push only makes sense inside this window; further out it is a value check-in
+
+
 def _renewal(c: Ctx) -> bool:
-    days, plan, amt = c.p.get("days_remaining"), c.p.get("plan"), c.p.get("renewal_amount")
-    if days is None:
-        return False
+    """One trigger kind, three situations: <= 30 days left -> renewal push; > 30 -> value check-in (no renewal ask);
+    expired -> winback framing. The payload wins over the merchant's subscription record."""
+    sub = c.m.get("subscription") or {}
+    days = c.p.get("days_remaining")
+    plan, amt = c.p.get("plan") or sub.get("plan"), c.p.get("renewal_amount")
+    from_sub = not isinstance(days, (int, float)) or isinstance(days, bool)      # then the hook is the sourced subscription fact
+    if from_sub:
+        if sub.get("status") == "expired" and sub.get("days_since_expiry"):
+            days = -int(sub["days_since_expiry"])
+        elif sub.get("status") == "active" and isinstance(sub.get("days_remaining"), (int, float)):
+            days = sub["days_remaining"]
+        else:
+            return False
+    if days <= 0 or (sub.get("status") == "expired" and not c.p.get("days_remaining")):
+        ago = -days if days < 0 else (sub.get("days_since_expiry") or 0)
+        c.kind = "winback_eligible"
+        if from_sub:
+            return True
+        if 0 < ago <= 730:
+            c.add("hook", f"Your {plan + ' ' if plan else ''}plan expired {plural(ago, 'day')} ago", "trigger.days_remaining",
+                  hi=f"Aapka {plan + ' ' if plan else ''}plan {ago} din pehle expire ho gaya")
+        else:
+            c.add("hook", f"Your {plan + ' ' if plan else ''}plan has expired", "trigger.days_remaining",
+                  hi=f"Aapka {plan + ' ' if plan else ''}plan expire ho gaya hai")
+        return True
+    if days > RENEWAL_PUSH_DAYS:
+        c.kind = "renewal_value"                     # lead with what the profile is doing (the hook is picked from merchant facts)
+        return True
+    if from_sub:
+        return True
     tail = f", and renewal is {fmt_money(amt)}" if amt else ""
     hi_tail = f", aur renewal {fmt_money(amt)} ka hai" if amt else ""
     c.add("hook", f"Your {plan + ' ' if plan else ''}plan has {plural(days, 'day')} left{tail}", "trigger.days_remaining",
@@ -551,27 +608,37 @@ BUILDERS: dict[str, Builder] = {
 _STRICT = {"research_digest", "regulation_change", "cde_opportunity"}
 
 
+def _payload_summary(p: dict) -> str:
+    """{'note': 'anniversary', 'years': 8} -> 'anniversary, 8 years'. Never raw keys, colons or semicolons."""
+    bits = []
+    for k, v in p.items():
+        if isinstance(v, bool) or k in ("category", "placeholder") or str(k).endswith(("_id", "_iso", "_at")):
+            continue
+        if isinstance(v, (int, float)):
+            bits.append(f"{fmt_num(v)} {words(k)}")
+        elif isinstance(v, str) and v.strip() and not re.search(r"https?://|\d{4}-\d{2}-\d{2}T", v):
+            bits.append(words(v).strip())
+        if len(bits) == 2:
+            break
+    return ", ".join(bits)
+
+
 def _generic_hook(c: Ctx) -> None:
     """Most specific thing we know when the kind is unknown or its payload is empty/placeholder."""
     if c.t.scope == "customer":
         ago = _months_hook(c)
-        c.add("hook", ago or "We haven't seen you in a while", "customer.relationship")
+        if ago:
+            c.add("hook", ago, "customer.relationship")
         return
     if not c.p.get("placeholder"):
-        bits = []
-        for k, v in c.p.items():
-            if isinstance(v, (str, int, float)) and not isinstance(v, bool) and k not in ("category",) \
-                    and not str(k).endswith("_id") and not str(k).endswith("_iso"):
-                bits.append(f"{words(k)} {v}" if isinstance(v, (int, float)) else f"{words(k)}: {words(v)}")
-            if len(bits) == 2:
-                break
-        if bits:
-            c.add("hook", "Here's something worth a look: " + "; ".join(bits), "trigger.payload")
-            return
+        summary = _payload_summary(c.p)
+        if summary:
+            c.add("hook", f"Your profile has a new update: {summary}", "trigger.payload")
 
 
 # What to lead with when the trigger payload carries no data (all generated triggers): first a trigger-specific fact derived
-# from the merchant/category context, then an honest kind-level statement, then the strongest merchant fact.
+# from the merchant/category context, then the strongest merchant fact. No generic kind-level sentences.
+THIN = "thin:"                      # source prefix: the hook was chosen because the trigger payload had no specifics
 _FALLBACK_KEYS = {
     "perf_dip": ("m.week_down", "m.views_below", "m.calls_below"),
     "perf_spike": ("m.week_up", "m.views_above", "m.calls_above"),
@@ -581,44 +648,6 @@ _FALLBACK_KEYS = {
     "dormant_with_vera": ("m.dormant",),
     "review_theme_emerged": ("m.review",),
 }
-_KIND_STATEMENT = {
-    "perf_dip": "Your profile numbers have dipped recently",
-    "perf_spike": "Your profile numbers picked up recently",
-    "seasonal_perf_dip": "Your profile numbers have dipped, which is common at this time of year",
-    "competitor_opened": "A new competitor has opened near you",
-    "milestone_reached": "You're close to a new milestone on your profile",
-    "review_theme_emerged": "Recent reviews are showing a recurring theme",
-    "festival_upcoming": "A festival is coming up",
-    "category_seasonal": "Demand is shifting with the season",
-    "ipl_match_today": "There's an IPL match on today",
-    "active_planning_intent": "Following up on the idea you shared with me",
-    "renewal_due": "Your plan is coming up for renewal",
-    "winback_eligible": "Your plan has lapsed and your profile is slowing down",
-    "dormant_with_vera": "It's been a while since we last spoke",
-    "gbp_unverified": "Your Google Business Profile still needs verification",
-    "supply_alert": "A supply alert has been issued for your category",
-}
-
-
-_KIND_STATEMENT_HI = {
-    "perf_dip": "Aapke profile ke numbers haal hi mein gire hain",
-    "perf_spike": "Aapke profile ke numbers haal hi mein badhe hain",
-    "seasonal_perf_dip": "Aapke profile ke numbers gire hain, jo saal ke is samay mein aam baat hai",
-    "competitor_opened": "Aapke paas ek naya competitor khula hai",
-    "milestone_reached": "Aap apne profile par ek naye milestone ke kareeb hain",
-    "review_theme_emerged": "Recent reviews mein ek baar-baar aane wala theme dikh raha hai",
-    "festival_upcoming": "Ek festival aa raha hai",
-    "category_seasonal": "Season ke saath demand shift ho rahi hai",
-    "ipl_match_today": "Aaj IPL match hai",
-    "active_planning_intent": "Aapne jo idea share kiya tha, ye usi ka follow-up hai",
-    "renewal_due": "Aapka plan renewal ke liye aa raha hai",
-    "winback_eligible": "Aapka plan lapse ho gaya hai aur profile slow ho raha hai",
-    "dormant_with_vera": "Humari baat ko kaafi time ho gaya hai",
-    "gbp_unverified": "Aapke Google Business Profile ko abhi verification chahiye",
-    "supply_alert": "Aapki category ke liye ek supply alert aaya hai",
-}
-
-
 def _strongest_keys(c: Ctx) -> list[str]:
     """Merchant facts ranked by how striking they are: peer gap, lapsed customers, review theme, retention gap, offers."""
     agg = c.m.get("customer_aggregate") or {}
@@ -653,29 +682,27 @@ def _strongest_keys(c: Ctx) -> list[str]:
 
 
 def _fallback_hook(c: Ctx) -> None:
-    """The trigger payload is thin/placeholder: lead with the most relevant, then the strongest, merchant fact."""
+    """The trigger payload is thin/placeholder: lead with the most relevant, then the strongest, CONCRETE merchant fact.
+    Never a generic sentence about the trigger kind ("a festival is coming up"). The hook is marked thin (source prefix) so the
+    writer asks a kind-appropriate question instead of pretending we know the trigger's specifics."""
     def promote(fact: Fact) -> None:
         c.facts.remove(fact)
-        c.facts.insert(0, replace(fact, key="hook"))
+        c.facts.insert(0, replace(fact, key="hook", source=THIN + fact.source))
 
-    for key in _FALLBACK_KEYS.get(c.t.kind, ()):
+    if c.t.scope != "customer":
+        for key in (*_FALLBACK_KEYS.get(c.kind, ()), *_strongest_keys(c), "m.perf30", "m.offers", "m.ctr"):
+            f = c.get(key)
+            if f:
+                promote(f)
+                return
+    for key in ("c.months", "c.lastvisit", "c.services", "c.visits", "m.offer_price"):
         f = c.get(key)
         if f:
             promote(f)
             return
-    stmt = _KIND_STATEMENT.get(c.t.kind)
-    if c.t.scope != "customer":
-        for key in _strongest_keys(c):
-            promote(c.get(key))
-            if stmt:                                     # the trigger itself becomes the one supporting sentence
-                c.facts.insert(1, Fact(id="", key="t.kind", text=stmt, atoms=set(), source="trigger.kind",
-                                       hi=_KIND_STATEMENT_HI.get(c.t.kind)))
-            return
-    if stmt:
-        c.facts.insert(0, Fact(id="", key="hook", text=stmt, atoms=set(), source="trigger.kind",
-                               hi=_KIND_STATEMENT_HI.get(c.t.kind)))
-        return
-    c.facts.insert(0, Fact(id="", key="hook", text="Here's a quick update on your profile", atoms=set(), source="merchant"))
+    name = c.m.get("identity", {}).get("name")
+    c.facts.insert(0, Fact(id="", key="hook", text=f"{name} is live on magicpin" if name else "Your profile is live on magicpin",
+                           atoms=set(), source=THIN + "merchant"))
 
 
 # ================================ merchant / customer facts ===================================
@@ -754,12 +781,13 @@ def _merchant_facts(c: Ctx) -> None:
     sub = m.get("subscription") or {}
     if sub.get("status") == "active" and sub.get("days_remaining") is not None:
         plan = f"your {sub['plan']} plan" if sub.get("plan") else "your plan"
+        plan_hi = f"aapke {sub['plan']} plan" if sub.get("plan") else "aapke plan"
         c.add("m.subscription", f"Your magicpin subscription shows {plan} has {plural(sub['days_remaining'], 'day')} left",
               "merchant.subscription",
-              hi=f"Aapke magicpin subscription ke hisaab se {plan} mein {sub['days_remaining']} din bache hain")
+              hi=f"Aapke magicpin subscription mein {plan_hi} ke {sub['days_remaining']} din baaki hain")
     elif sub.get("status") == "expired" and sub.get("days_since_expiry"):
         text = f"Your magicpin subscription shows your plan expired {plural(sub['days_since_expiry'], 'day')} ago"
-        hi_text = f"Aapke magicpin subscription ke hisaab se aapka plan {sub['days_since_expiry']} din pehle expire ho gaya"
+        hi_text = f"Aapke magicpin subscription mein aapka plan {sub['days_since_expiry']} din pehle expire ho gaya dikh raha hai"
         c.add("m.subscription", text, "merchant.subscription", hi=hi_text)
         c.add("m.expired", text, "merchant.subscription", hi=hi_text)
     for th in m.get("review_themes") or []:
@@ -845,17 +873,22 @@ def _customer_facts(c: Ctx) -> None:
     rel = cu.get("relationship") or {}
     n = months_between(parse_dt(rel.get("last_visit")), c.now)
     if n and n <= 60:
-        c.add("c.months", f"It's been {n} months since your last visit", "customer.relationship.last_visit")
+        c.add("c.months", f"It's been {n} months since your last visit", "customer.relationship.last_visit",
+              hi=f"Aapki last visit ko {n} mahine ho gaye hain")
     last = parse_dt(rel.get("last_visit"))
     if last and last <= c.now:
-        c.add("c.lastvisit", f"Our records show your last visit was on {fmt_date(last)}", "customer.relationship.last_visit")
+        c.add("c.lastvisit", f"Our records show your last visit was on {fmt_date(last)}", "customer.relationship.last_visit",
+              hi=f"Humare records ke hisaab se aapki last visit {fmt_date(last)} ko thi")
     first = parse_dt(rel.get("first_visit"))
     if first and first <= c.now:
-        c.add("c.since", f"Our records show you've been with us since {fmt_month_year(first)}", "customer.relationship.first_visit")
+        c.add("c.since", f"Our records show you've been with us since {fmt_month_year(first)}", "customer.relationship.first_visit",
+              hi=f"Humare records ke hisaab se aap {fmt_month_year(first)} se humare saath hain")
     if rel.get("visits_total"):
-        c.add("c.visits", f"Our records show you've visited {plural(rel['visits_total'], 'time')}", "customer.relationship.visits_total")
+        c.add("c.visits", f"Our records show you've visited {plural(rel['visits_total'], 'time')}", "customer.relationship.visits_total",
+              hi=f"Humare records ke hisaab se aap {rel['visits_total']} baar aa chuke hain")
     if rel.get("favourite_dish"):
-        c.add("c.fav", f"Your favourite with us is {rel['favourite_dish']}", "customer.relationship.favourite_dish", (rel["favourite_dish"],))
+        c.add("c.fav", f"Your favourite with us is {rel['favourite_dish']}", "customer.relationship.favourite_dish", (rel["favourite_dish"],),
+              hi=f"Humare yahan aapka favourite {rel['favourite_dish']} hai")
     slots_pref = (cu.get("preferences") or {}).get("preferred_slots")
     if slots_pref:
         c.add("c.pref", f"You prefer {cap_days(words(slots_pref))} slots", "customer.preferences.preferred_slots")
@@ -865,10 +898,12 @@ def _customer_facts(c: Ctx) -> None:
         if w and w != "..." and w not in seen:
             seen.append(w)
     if seen:
-        c.add("c.services", f"Our records show you've had {join_and(seen[:3])} with us before", "customer.relationship.services_received")
+        c.add("c.services", f"Our records show you've had {join_and(seen[:3])} with us before", "customer.relationship.services_received",
+              hi=f"Humare records ke hisaab se aapne pehle humse {join_and(seen[:3]).replace(' and ', ' aur ')} liya hai")
     stylist = (cu.get("preferences") or {}).get("preferred_stylist")
     if stylist:
-        c.add("c.stylist", f"Your preferred stylist is {stylist}", "customer.preferences", (stylist,))
+        c.add("c.stylist", f"Your preferred stylist is {stylist}", "customer.preferences", (stylist,),
+              hi=f"Aapki preferred stylist {stylist} hain")
 
 
 # ================================ entry point ====================================================
@@ -952,5 +987,5 @@ def build_factsheet(trigger: Trigger, merchant: dict, category: dict, customer: 
         facts=c.facts, salutation=salutation, language=language,  # type: ignore[arg-type]
         send_as="merchant_on_behalf" if customer_facing else "vera", category_slug=slug,
         voice=category.get("voice") or {}, allowed_entities=entities, active_offers=c.active_offers(),
-        kind=trigger.kind, merchant_name=ident.get("name", ""), slots=c.slots, consent_note=consent_note,
+        kind=c.kind, merchant_name=ident.get("name", ""), slots=c.slots, consent_note=consent_note,
     )

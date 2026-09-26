@@ -6,7 +6,7 @@ from typing import Optional
 
 from .humanize import parse_dt
 from .normalize import Trigger
-from .playbooks import get_playbook
+from .playbooks import get_playbook, kind_fits_category
 
 OPEN_CONVERSATION_WINDOW = timedelta(hours=24)
 
@@ -37,6 +37,8 @@ def check_policy(t: Trigger, merchant: Optional[dict], category: Optional[dict],
         scopes = [s for s in (consent.get("scope") or []) if isinstance(s, str)]
         if not consent.get("opted_in_at") and not scopes:
             return False, "no_consent"
+        if not kind_fits_category(t.kind, merchant.get("category_slug") or category.get("slug", "")):
+            return False, "kind_category_mismatch"
         wanted = get_playbook(t.kind).consent
         if consent_mode == "strict" and wanted and not (set(wanted) & set(scopes)):
             return False, "consent_scope_mismatch"

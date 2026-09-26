@@ -6,7 +6,8 @@ from typing import Optional
 
 from .humanize import strip_end
 from .models import FactSheet
-from .playbooks import Playbook
+from .playbooks import Playbook, category_ask
+from .verifier import repeated_facts
 
 N_VARIANTS = 3
 _LOWER_LEADS = {"your", "you", "you're", "it's", "a", "an", "time", "following", "thank", "we", "here's", "one",
@@ -58,26 +59,32 @@ def compose_fallback(fs: FactSheet, pb: Playbook, seed: str, variant: Optional[i
     hook = strip_end(_txt(fs, hook_fact) if hook_fact else "Here's a quick update")
     used = [hook_fact.id] if hook_fact else []
 
-    statement = bool(fs.get("t.kind")) or bool(hook_fact and hook_fact.source == "trigger.kind")
+    statement = bool(hook_fact and hook_fact.source.startswith("thin:"))     # payload had no specifics
     supports: list[str] = []
     if not minimal:
-        lead_keys = ("t.prev_hook", "t.kind") + (("m.changed",) if pb.changed_first and fs.send_as == "vera" else ())
+        lead_keys = ("t.prev_hook",) + (("m.changed",) if pb.changed_first and fs.send_as == "vera" else ())
         for key in lead_keys + pb.support_keys:
             f = fs.get(key)
-            if f and hook_fact and f.text == hook_fact.text:
-                continue
+            if f and hook_fact and (f.text == hook_fact.text or repeated_facts(f"{hook}. {_txt(fs, f)}.")):
+                continue                                     # never say the same fact twice in one body
             if f:
                 supports.append(_no_repeat_source(strip_end(_txt(fs, f)), hook))
                 used.append(f.id)
             if len(supports) >= pb.support_n:
                 break
+        if statement and not supports:                       # thin payload: one more concrete fact from the merchant/customer
+            for f in fs.facts:
+                if f.key != "hook" and not f.key.startswith(("t.", "cat.")) and f.text != hook_fact.text                         and not repeated_facts(f"{hook}. {_txt(fs, f)}."):
+                    supports.append(_no_repeat_source(strip_end(_txt(fs, f)), hook))
+                    used.append(f.id)
+                    break
 
     slot = _slot_ask(fs, pb)
     if statement and pb.stmt_ask_en:
         default_ask = pb.stmt_ask_hi if fs.language == "hi-en" and pb.stmt_ask_hi else pb.stmt_ask_en
     else:
         default_ask = pb.ask_hi if fs.language == "hi-en" else pb.ask_en
-    ask = slot or default_ask
+    ask = slot or category_ask(pb, fs.category_slug, fs.language == "hi-en") or default_ask
     cta = "multi_choice_slot" if slot else pb.cta_type
 
     def assemble(sup: list[str]) -> str:

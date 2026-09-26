@@ -172,7 +172,7 @@ def test_thin_payload_leads_with_the_strongest_merchant_fact(dataset):
         m["customer_aggregate"].update({"lapsed_180d_plus": 400, "total_unique_ytd": 540})
     trig, fs = build(dataset, _thin("competitor_opened", mid), "en", mutate=lapsed_heavy)
     assert fs.text("hook") == "Your customer records show 400 customers who haven't visited in over 180 days"
-    assert fs.text("t.kind") == "A new competitor has opened near you"
+    assert fs.get("t.kind") is None and fs.get("hook").source.startswith("thin:")
     def peer_gap(m, c):
         m["performance"]["views"] = 300                                                                          # far below peers
     trig, fs = build(dataset, _thin("competitor_opened", mid), "en", mutate=peer_gap)
