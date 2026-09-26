@@ -28,6 +28,10 @@ class Store(ABC):
     async def mget_contexts(self, scope: str, cids: list[str]) -> list[Optional[tuple[int, dict]]]: ...
 
     @abstractmethod
+    async def mget_previous(self, scope: str, cids: list[str]) -> list[Optional[dict]]:
+        """The payload that was replaced by the current version (merchant scope only), or None."""
+
+    @abstractmethod
     async def health(self) -> tuple[dict, Optional[float]]:
         """One round-trip. Returns (counts, boot_ts or None)."""
 

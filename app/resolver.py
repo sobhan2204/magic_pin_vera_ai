@@ -49,7 +49,8 @@ def _season(note: Any) -> str:
 
 class Ctx:
     def __init__(self, trigger: Trigger, merchant: dict, category: dict, customer: Optional[dict],
-                 now: Optional[datetime]) -> None:
+                 now: Optional[datetime], prev_merchant: Optional[dict] = None) -> None:
+        self.prev = prev_merchant if isinstance(prev_merchant, dict) else None
         self.t, self.m, self.cat, self.cust = trigger, merchant, category, customer
         self.now = now or datetime.now(timezone.utc)
         self.p = trigger.payload if isinstance(trigger.payload, dict) else {}
@@ -622,6 +623,8 @@ def _strongest_keys(c: Ctx) -> list[str]:
     """Merchant facts ranked by how striking they are: peer gap, lapsed customers, review theme, retention gap, offers."""
     agg = c.m.get("customer_aggregate") or {}
     cands: list[tuple[float, str]] = []
+    if c.get("m.changed"):
+        cands.append((5.0, "m.changed"))
     for k in ("views", "calls"):
         v, pv = c.perf.get(k), c.peer.get(f"avg_{k}_30d")
         if isinstance(v, (int, float)) and isinstance(pv, (int, float)) and pv:
@@ -774,6 +777,42 @@ def _merchant_facts(c: Ctx) -> None:
             break
 
 
+_CHANGE_METRICS = (("views", "views"), ("calls", "calls"), ("directions", "direction requests"), ("leads", "leads"))
+
+
+def _changed_facts(c: Ctx) -> None:
+    """The merchant's context was updated since the previous version: say what actually moved (m.changed)."""
+    prev = (c.prev or {}).get("performance") if c.prev else None
+    cur = c.perf
+    if not isinstance(prev, dict) or not cur:
+        return
+    win = cur.get("window_days", 30)
+    for key, name in _CHANGE_METRICS:
+        new, old = cur.get(key), prev.get(key)
+        if isinstance(new, (int, float)) and isinstance(old, (int, float)) and new != old and old > 0:
+            pct = fmt_pct((new - old) / old)
+            up = new > old
+            c.add("m.changed", f"Your Google profile now shows {fmt_num(new)} {name} over {win} days, {'up' if up else 'down'} {pct} "
+                               f"from {fmt_num(old)}", "merchant.performance.changed",
+                  hi=f"Aapke Google profile par ab {win} din mein {fmt_num(new)} {name} hain, pehle {fmt_num(old)} the "
+                     f"({pct} {'zyada' if up else 'kam'})")
+            return
+    new, old = cur.get("ctr"), prev.get("ctr")
+    if isinstance(new, (int, float)) and isinstance(old, (int, float)) and new != old:
+        c.add("m.changed", f"Your Google profile now shows a click-through rate of {fmt_pct(new)}, {'up' if new > old else 'down'} from {fmt_pct(old)}",
+              "merchant.performance.changed",
+              hi=f"Aapke Google profile par click-through rate ab {fmt_pct(new)} hai, pehle {fmt_pct(old)} tha")
+        return
+    nd, od = cur.get("delta_7d") or {}, prev.get("delta_7d") or {}
+    for key, name in (("views_pct", "views"), ("calls_pct", "calls")):
+        new, old = nd.get(key), od.get(key)
+        if isinstance(new, (int, float)) and isinstance(old, (int, float)) and new != old and new != 0:
+            c.add("m.changed", f"Your Google profile now shows {name} {'up' if new > 0 else 'down'} {fmt_pct(new)} this week, "
+                               f"compared with {'up' if old > 0 else 'down'} {fmt_pct(old)} before", "merchant.performance.changed",
+                  hi=f"Aapke Google profile par is hafte {name} {fmt_pct(new)} {'badhe' if new > 0 else 'gire'} hain, pehle {fmt_pct(old)} the")
+            return
+
+
 def _month_in_range(rng: str, month: int) -> bool:
     names = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
     parts = [x.strip()[:3].lower() for x in str(rng).replace("–", "-").split("-") if x.strip()]
@@ -857,9 +896,9 @@ def make_salutation(category_slug: str, merchant: dict) -> str:
 
 
 def build_factsheet(trigger: Trigger, merchant: dict, category: dict, customer: Optional[dict],
-                    now: Optional[datetime]) -> Optional[FactSheet]:
+                    now: Optional[datetime], prev_merchant: Optional[dict] = None) -> Optional[FactSheet]:
     pb = get_playbook(trigger.kind)
-    c = Ctx(trigger, merchant, category, customer, now)
+    c = Ctx(trigger, merchant, category, customer, now, prev_merchant)
     builder = BUILDERS.get(trigger.kind)
     ok = builder(c) if builder else False
     if not ok:
@@ -867,6 +906,7 @@ def build_factsheet(trigger: Trigger, merchant: dict, category: dict, customer: 
             return None                       # required digest item not found -> missing join
         _generic_hook(c)
     _merchant_facts(c)
+    _changed_facts(c)
     _category_facts(c)
     if customer:
         _customer_facts(c)

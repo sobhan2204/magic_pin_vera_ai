@@ -88,3 +88,19 @@ async def test_quota_reserve_n_is_atomic_and_matches_sequential_reserve(any_stor
     assert await s.quota_reserve_n("m2", 10, 3, lim, ts) == 0            # cooling model grants nothing
     assert await s.quota_reserve_n("m3", 10, 0, lim, ts) == 0
     await s.wipe()
+
+
+async def test_previous_merchant_payload_is_kept_on_replacement(any_store):
+    s = any_store
+    await s.wipe()
+    await s.put_context("merchant", "m1", 1, {"performance": {"views": 10}})
+    assert await s.mget_previous("merchant", ["m1", "nope"]) == [None, None]
+    await s.put_context("merchant", "m1", 2, {"performance": {"views": 20}})
+    assert (await s.mget_previous("merchant", ["m1"]))[0] == {"performance": {"views": 10}}
+    await s.put_context("merchant", "m1", 2, {"performance": {"views": 99}})       # same version: untouched
+    assert (await s.mget_previous("merchant", ["m1"]))[0] == {"performance": {"views": 10}}
+    await s.put_context("category", "c1", 1, {"a": 1})
+    await s.put_context("category", "c1", 2, {"a": 2})
+    assert await s.mget_previous("category", ["c1"]) == [None]                       # only merchants keep a predecessor
+    assert await s.get_context("merchant", "m1") == (2, {"performance": {"views": 20}})
+    await s.wipe()

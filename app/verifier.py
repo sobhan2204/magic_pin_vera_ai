@@ -145,6 +145,14 @@ def ungrounded_sentences(body: str, fs: FactSheet) -> list[str]:
     return bad
 
 
+def changed_field_used(body: str, fs: FactSheet, changed_first: bool) -> bool:
+    """When the merchant's data was updated, an LLM draft must mention the updated value (not an unchanged field)."""
+    f = fs.get("m.changed")
+    if not f or not changed_first or fs.send_as != "vera":
+        return True
+    return bool(f.atoms & extract_numbers(body))
+
+
 def hook_covered(body: str, fs: FactSheet) -> bool:
     """LLM messages must actually lead with the hook fact (keeps message, rationale and trigger aligned)."""
     hook = fs.get("hook")

@@ -14,7 +14,11 @@ if cur then
   cur = tonumber(cur)
   if cur == nv then return {'same', tostring(cur)} end
   if cur > nv then return {'stale', tostring(cur)} end
-  redis.call('HSET', KEYS[1], 'v', ARGV[1], 'p', ARGV[2])
+  if ARGV[3] == 'merchant' then
+    redis.call('HSET', KEYS[1], 'v', ARGV[1], 'p', ARGV[2], 'pp', redis.call('HGET', KEYS[1], 'p'))
+  else
+    redis.call('HSET', KEYS[1], 'v', ARGV[1], 'p', ARGV[2])
+  end
   return {'replaced', ARGV[1]}
 end
 redis.call('HSET', KEYS[1], 'v', ARGV[1], 'p', ARGV[2])
@@ -110,6 +114,14 @@ class RedisStore(Store):
         for c in cids:
             pipe.hmget(self._k("ctx", scope, c), "v", "p")
         return [self._decode(r) for r in await pipe.exec()]
+
+    async def mget_previous(self, scope, cids):
+        if not cids:
+            return []
+        pipe = self.r.pipeline()
+        for c in cids:
+            pipe.hget(self._k("ctx", scope, c), "pp")
+        return [json.loads(v) if isinstance(v, str) and v else None for v in await pipe.exec()]
 
     async def health(self):
         raw = _pairs_to_dict(await self.r.hgetall(self._k("counts")))

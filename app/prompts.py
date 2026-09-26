@@ -64,7 +64,7 @@ def select_facts(fs: FactSheet, pb: Playbook) -> list:
             chosen.append(f)
 
     take(fs.get("hook"))
-    for k in (*_FACT_ORDER_EXTRA, "t.kind", *pb.support_keys):
+    for k in (*_FACT_ORDER_EXTRA, "t.kind", *(("m.changed",) if pb.changed_first and fs.send_as == "vera" else ()), *pb.support_keys):
         take(fs.get(k))
     for f in fs.facts:
         take(f)

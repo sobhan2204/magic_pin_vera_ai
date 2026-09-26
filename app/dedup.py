@@ -31,7 +31,7 @@ def too_similar(body: str, previous: list[str], limit: float = SIMILARITY_LIMIT)
     return None
 
 
-_GENERIC_ALTERNATES = ("m.perf30", "m.ctr", "m.offers", "m.week", "cat.trend", "cat.season", "m.retention", "m.lapsed")
+_GENERIC_ALTERNATES = ("m.changed", "m.perf30", "m.ctr", "m.offers", "m.week", "cat.trend", "cat.season", "m.retention", "m.lapsed")
 
 
 def hook_identity(fact) -> tuple[str, set[str]]:

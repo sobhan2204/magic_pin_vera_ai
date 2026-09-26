@@ -61,7 +61,8 @@ def compose_fallback(fs: FactSheet, pb: Playbook, seed: str, variant: Optional[i
     statement = bool(fs.get("t.kind")) or bool(hook_fact and hook_fact.source == "trigger.kind")
     supports: list[str] = []
     if not minimal:
-        for key in ("t.prev_hook", "t.kind") + pb.support_keys:
+        lead_keys = ("t.prev_hook", "t.kind") + (("m.changed",) if pb.changed_first and fs.send_as == "vera" else ())
+        for key in lead_keys + pb.support_keys:
             f = fs.get(key)
             if f and hook_fact and f.text == hook_fact.text:
                 continue

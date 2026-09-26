@@ -23,6 +23,7 @@ class Playbook:
     needs_digest: bool = False
     deliverable: str = "the draft"             # what we hand over when the merchant says yes
     why_now: str = ""
+    changed_first: bool = True                            # an updated merchant field is the supporting fact (evidence kinds opt out)
     stmt_ask_en: Optional[str] = None                     # ask to use in that case (we do not know the specifics)
     stmt_ask_hi: Optional[str] = None
 
@@ -32,13 +33,13 @@ def _pb(**kw) -> Playbook:
 
 
 _ALL = [
-    _pb(kind="research_digest", objective="Share one merchant-relevant research item and offer to draft patient-facing content",
+    _pb(kind="research_digest", changed_first=False, objective="Share one merchant-relevant research item and offer to draft patient-facing content",
         levers=("curiosity", "reciprocity", "specificity"), needs_digest=True,
         support_keys=("t.summary",), support_n=1,
         ask_en="Want me to pull the abstract and draft a patient-ed WhatsApp you can share?",
         ask_hi="Kya aap chahenge ki main abstract nikaal ke ek patient-ed WhatsApp draft kar doon?",
         deliverable="the abstract and a patient-ready WhatsApp draft", why_now="new digest item this week"),
-    _pb(kind="regulation_change", objective="Flag a compliance change with its deadline and offer a checklist",
+    _pb(kind="regulation_change", changed_first=False, objective="Flag a compliance change with its deadline and offer a checklist",
         levers=("loss_aversion", "specificity"), needs_digest=True, support_keys=("t.summary",),
         ask_en="Want me to draft a short compliance checklist for this?",
         ask_hi="Kya main iske liye ek chhota compliance checklist draft kar doon?",
@@ -132,7 +133,7 @@ _ALL = [
         ask_en="Want me to draft the promo message for the match?",
         ask_hi="Kya main match ke liye promo message draft kar doon?",
         deliverable="the promo message draft", why_now="match is on today"),
-    _pb(kind="review_theme_emerged", objective="Surface a recurring review complaint and offer a public reply plus fix",
+    _pb(kind="review_theme_emerged", changed_first=False, objective="Surface a recurring review complaint and offer a public reply plus fix",
         levers=("loss_aversion", "specificity"), support_keys=("t.quote",),
         ask_en="Want me to draft a public reply and a short fix checklist?",
         ask_hi="Kya main ek public reply aur chhota fix checklist draft kar doon?",
@@ -146,7 +147,7 @@ _ALL = [
         stmt_ask_en="Want me to check exactly how close you are and draft a short note for customers?",
         stmt_ask_hi="Kya main dekh loon ki aap kitne kareeb hain aur customers ke liye ek chhota note draft kar doon?",
         deliverable="a short customer note", why_now="milestone is within reach"),
-    _pb(kind="active_planning_intent", objective="Merchant already said yes: deliver a concrete first draft now",
+    _pb(kind="active_planning_intent", changed_first=False, objective="Merchant already said yes: deliver a concrete first draft now",
         levers=("effort_externalization",), cta_type="binary_yes_stop", support_keys=("t.draft",), support_n=1,
         ask_en="Reply CONFIRM and I'll expand this into the full draft with the announcement text, for your approval.",
         ask_hi="Aap Reply CONFIRM kar dijiye, main ise announcement text ke saath poora draft bana ke aapke approval ke liye bhej doon.",
@@ -166,12 +167,12 @@ _ALL = [
         ask_en="Want me to walk you through the verification steps now?",
         ask_hi="Kya main aapko verification ke steps abhi samjha doon?",
         deliverable="the verification steps", why_now="profile is still unverified"),
-    _pb(kind="cde_opportunity", objective="Invite the merchant to a relevant free/cheap learning event",
+    _pb(kind="cde_opportunity", changed_first=False, objective="Invite the merchant to a relevant free/cheap learning event",
         levers=("specificity", "effort_externalization"), cta_type="binary_yes_stop", needs_digest=True,
         support_keys=("t.fee",),
         ask_en="Reply YES and I'll save your seat.", ask_hi="Aap Reply YES kar dijiye, main aapki seat save kar doon.",
         deliverable="your registration", why_now="session is coming up"),
-    _pb(kind="supply_alert", objective="Alert the pharmacy to a batch recall and offer a customer notice",
+    _pb(kind="supply_alert", changed_first=False, objective="Alert the pharmacy to a batch recall and offer a customer notice",
         levers=("loss_aversion", "urgency"), support_keys=("t.action",),
         ask_en="Want me to draft a notice for customers who bought these batches?",
         ask_hi="Kya main in batches ke customers ke liye ek notice draft kar doon?",

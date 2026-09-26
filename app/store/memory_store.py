@@ -21,6 +21,7 @@ class MemoryStore(Store):
         self._sets: dict[str, set[str]] = {}
         self._lists: dict[str, list[str]] = {}
         self._quota: dict[str, dict[str, int]] = {}
+        self._prev: dict[tuple[str, str], dict] = {}
         self._cool: dict[str, float] = {}
 
     def _alive(self, key: str) -> bool:
@@ -40,6 +41,8 @@ class MemoryStore(Store):
                     return "same", cur[0]
                 if cur[0] > version:
                     return "stale", cur[0]
+                if scope == "merchant":
+                    self._prev[(scope, cid)] = cur[1]
                 self._ctx[(scope, cid)] = (version, json.loads(json.dumps(payload)))
                 return "replaced", version
             self._ctx[(scope, cid)] = (version, json.loads(json.dumps(payload)))
@@ -55,6 +58,10 @@ class MemoryStore(Store):
     async def mget_contexts(self, scope, cids):
         async with self._lock:
             return [self._ctx.get((scope, c)) for c in cids]
+
+    async def mget_previous(self, scope, cids):
+        async with self._lock:
+            return [self._prev.get((scope, c)) for c in cids]
 
     async def health(self):
         async with self._lock:
@@ -162,3 +169,4 @@ class MemoryStore(Store):
             self._lists.clear()
             self._quota.clear()
             self._cool.clear()
+            self._prev.clear()

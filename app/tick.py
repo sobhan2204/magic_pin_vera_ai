@@ -35,15 +35,16 @@ def conversation_id(t: Trigger) -> str:
     return f"{cid}_{t.customer_id}" if t.customer_id else cid
 
 
-async def _load_bundle(store: Store, triggers: list[Trigger]):
+async def _load_bundle(store: Store, triggers: list[Trigger], previous: dict):
     mids = sorted({t.merchant_id for t in triggers if t.merchant_id})
     cids = sorted({t.customer_id for t in triggers if t.customer_id})
     # everything that only needs the trigger list is fetched together (Redis latency is per round-trip, not per key)
-    m_rows, c_rows, m_states, c_states, sent_flags = await asyncio.gather(
+    m_rows, c_rows, m_states, c_states, sent_flags, m_prev = await asyncio.gather(
         store.mget_contexts("merchant", mids), store.mget_contexts("customer", cids),
         load_states(store, [mkey(m, "") for m in mids]), load_states(store, [ckey(c) for c in cids]),
-        store.mget_json([event_key(t) for t in triggers]))
+        store.mget_json([event_key(t) for t in triggers]), store.mget_previous("merchant", mids))
     merchants, customers = dict(zip(mids, m_rows)), dict(zip(cids, c_rows))
+    previous.update(dict(zip(mids, m_prev)))
     mstates, cstates = dict(zip(mids, m_states)), dict(zip(cids, c_states))
     slugs = sorted({(m[1].get("category_slug") or "") for m in merchants.values() if m} - {""})
     categories = dict(zip(slugs, await store.mget_contexts("category", slugs)))
@@ -66,7 +67,8 @@ async def run_tick(store: Store, settings: Settings, body: dict) -> list[dict]:
     if not triggers:
         return []
 
-    merchants, categories, customers, mstates, cstates, sent_flags = await _load_bundle(store, triggers)
+    previous: dict = {}                                   # merchant_id -> payload that the current version replaced
+    merchants, categories, customers, mstates, cstates, sent_flags = await _load_bundle(store, triggers, previous)
     deadline_at = started + settings.tick_deadline_s - FINALIZE_RESERVE_S
     router = Router(store, settings)
     tick_date = now.date().isoformat()
@@ -84,7 +86,7 @@ async def run_tick(store: Store, settings: Settings, body: dict) -> list[dict]:
         if not ok:
             log.info("no_op trigger=%s reason=%s", t.id, reason)
             continue
-        fs = build_factsheet(t, merchant, cat[1], cu[1] if cu else None, now)   # type: ignore[index]
+        fs = build_factsheet(t, merchant, cat[1], cu[1] if cu else None, now, prev_merchant=previous.get(t.merchant_id or ""))   # type: ignore[index]
         if fs is None:
             log.info("no_op trigger=%s reason=missing_join", t.id)
             continue
